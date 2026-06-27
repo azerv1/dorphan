@@ -5,19 +5,13 @@ from __future__ import annotations
 import json
 
 from .matcher import Classified
-from .util import human_size, supports_color
-
-
-def _c(text: str, code: str) -> str:
-    if not supports_color():
-        return text
-    return f"\033[{code}m{text}\033[0m"
+from .util import human_size
 
 
 def print_table(items: list[Classified], title: str, show_match: bool = False) -> None:
     items = sorted(items, key=lambda c: c.folder.size, reverse=True)
     print()
-    print(_c(title, "1"))
+    print(title)
     if not items:
         print("  (none)")
         return
@@ -29,7 +23,7 @@ def print_table(items: list[Classified], title: str, show_match: bool = False) -
     header = f"  {'SIZE':>10}  {'FILES':>7}  {'LOCATION':<{root_w}}  NAME"
     if show_match:
         header += " " * (name_w - 4) + "   MATCHED"
-    print(_c(header, "2"))
+    print(header)
 
     for c in items:
         f = c.folder
@@ -48,14 +42,11 @@ def print_summary(
 ) -> None:
     orphan_bytes = sum(c.folder.size for c in orphans)
     print()
-    print(_c("Summary", "1"))
+    print("Summary")
     print(f"  installed-app folders : {len(claimed)}")
     print(f"  system/OS folders     : {len(system)}")
-    print(
-        f"  {_c('orphaned leftovers', '33')}    : "
-        f"{_c(str(len(orphans)), '1')}  "
-        f"({_c(human_size(orphan_bytes), '1')} reclaimable)"
-    )
+    print(f"  orphaned leftovers    : {len(orphans)}  "
+          f"({human_size(orphan_bytes)} reclaimable)")
 
 
 def print_json(items: list[Classified]) -> None:

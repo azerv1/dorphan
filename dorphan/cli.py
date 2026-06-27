@@ -46,8 +46,9 @@ def _parse_size(text: str) -> int:
             text = text[:-1]
             break
     try:
+        # OverflowError guards 'inf'/'1e400' (float() succeeds, int(inf) blows up).
         return int(float(text) * mult)
-    except ValueError:
+    except (ValueError, OverflowError):
         raise argparse.ArgumentTypeError(f"invalid size: {text!r}")
 
 
@@ -62,34 +63,100 @@ def _excluded(folder_name: str, folder_path: str, patterns: list[str]) -> bool:
     return False
 
 
+def _confirm_bulk_delete(count: int, recover: bool = False) -> bool:
+    """Ask the user to confirm a bulk `-c -d` delete. True to proceed.
+
+    Bulk delete removes every listed orphan at once with no per-folder prompt,
+    so make the user pause and confirm they reviewed the `dorphan --scan` preview.
+    A non-interactive stdin (piped/redirected) is treated as "no". When `recover`
+    is set the folders are moved to a restorable trash, so the wording softens.
+    """
+    if not sys.stdin or not sys.stdin.isatty():
+        print("error: refusing to bulk-delete without an interactive terminal "
+              "to confirm. Run `dorphan -d` directly, or use `dorphan -i`.",
+              file=sys.stderr)
+        return False
+    if recover:
+        print(f"About to move {count} folder(s) to recovery (restorable).")
+    else:
+        print(f"About to permanently DELETE {count} folder(s).")
+    print("Are you sure? Have you reviewed the report with `dorphan --scan` first?")
+    try:
+        answer = input("Type 'yes' to proceed, anything else to abort: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in ("yes", "y")
+
+
+def print_deletion_log() -> None:
+    """Show the recent deletion log (compact lines) with a tiny legend."""
+    from . import recovery
+
+    lines = recovery.read_log()
+    if not lines:
+        print("No deletions logged yet.")
+        return
+    print("act t=yYMMDD-HHMM  size  files  id  path   "
+          "(act: d=delete q=quarantine r=restore p=purge)")
+    for line in lines:
+        print("  " + line)
+    items = recovery.entries()
+    if items:
+        print(f"\n{len(items)} folder(s) recoverable. "
+              "Restore with: dorphan --restore <id>")
+
+
+def run_restore(ident: str) -> int:
+    """Restore one quarantined folder by id; return a process exit code."""
+    from . import recovery
+
+    ok, msg = recovery.restore(ident)
+    if ok:
+        print(f"Restored to {msg}")
+        return 0
+    print(f"error: {msg}", file=sys.stderr)
+    return 1
+
+
+def run_prune() -> int:
+    """Permanently purge the recovery trash."""
+    from . import recovery
+
+    count, freed = recovery.empty_trash()
+    print(f"Purged {human_size(freed)} across {count} recovered folder(s).")
+    return 0
+
+
 def print_advanced_help() -> None:
     """Print advanced cleanup options that are hidden from normal --help."""
     print(textwrap.dedent(
         f"""\
         dorphan advanced help
 
-        Normal usage:
-          dorphan              scan only; delete nothing
-          dorphan -c           dry-run cleanup preview
-          dorphan -i           confirm each deletion manually
-
-        Advanced cleanup:
-          --depth N            minimum path depth allowed for deletion
-                               default: {cleaner.DEFAULT_MIN_DEPTH}
-                               absolute minimum: {cleaner.ABSOLUTE_MIN_DEPTH} (Adminstrator only)
-
-          --unsafe             allow depth-{cleaner.ABSOLUTE_MIN_DEPTH} folders such as:
-                               C:\\Program Files\\SomeApp
-                               C:\\ProgramData\\SomeApp
+        Examples:
+          dorphan --scan                 preview what bulk delete would remove
+          dorphan -d                     delete the orphaned folders
+          dorphan -d --trash             delete, but keep a restorable copy
+          dorphan -i                     review and delete one folder at a time
+          dorphan --scan -m 100MB        preview, only folders >= 100 MB
+          dorphan --scan --confidence medium   include lower-confidence orphans
+          dorphan -d --exclude npm* node_modules   skip folders by name/glob
+          dorphan -i --unsafe            (elevated) reach shallow system folders
 
         Safety rules:
-          - Nothing is deleted by a normal scan.
-          - Bulk delete requires: dorphan -c -d
-          - --unsafe requires: dorphan -i --unsafe
-          - --unsafe requires an elevated Administrator terminal.
-          - Shallow folders are never bulk-deleted.
-          - C:\\Windows, C:\\Program Files, drive roots, and protected system
+          - A plain scan never deletes; shallow folders are never bulk-deleted.
+          - Reaching shallow folders needs `-i --unsafe` + an elevated terminal.
+          - C:\\Windows, Program Files, drive roots, and protected system
             folders are always refused.
+
+        Recovery:
+          Every delete is recorded in a compact log (deletions.log under
+          %LOCALAPPDATA%\\dorphan). Deletes are permanent by default.
+          --trash [PATH]       move deletions to a restorable trash instead
+          --log                show the recent deletion log
+          --restore ID         put a trashed folder back (id from --log)
+          --prune              empty the trash for good
 
         Support:
           --donate
@@ -106,15 +173,15 @@ def print_basic_usage() -> None:
         Find orphaned Windows app folders.
 
         Usage:
+          dorphan --scan          preview orphaned folders; delete nothing
+          dorphan -d              delete the orphaned folders
+          dorphan -i              review and delete one folder at a time
           dorphan --help          show full help
-          dorphan -m 100MB        scan folders >= 100 MB
-          dorphan --json          scan and output JSON
-          dorphan -c              dry-run cleanup preview
-          dorphan -i              interactive cleanup
+          dorphan --helpme        advanced options and examples
 
         Safety:
           Plain `dorphan` does not scan or delete.
-          Deleting requires `dorphan -c -d` or `dorphan -i`.
+          Deleting requires `dorphan -d` or `dorphan -i`.
         """
     ))
 
@@ -124,24 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="dorphan",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Find orphaned Windows app folders. Default: scan only; delete nothing.",
-        epilog=textwrap.dedent(
-            """\
-            examples:
-              dorphan                 scan only
-              dorphan -m 100MB        show folders >= 100 MB
-              dorphan --exclude npm*  hide matching folders
-              dorphan -c              preview cleanup; delete nothing
-              dorphan -c -d           delete listed orphans
-              dorphan -i              confirm each deletion manually
-
-            safety:
-              Normal scans never delete.
-              Bulk delete requires -c -d.
-              Risky shallow deletes require -i --unsafe and Administrator.
-
-            More help: dorphan --helpme
-            """
-        ),
+        epilog="More help and examples: dorphan --helpme",
     )
 
     p.add_argument("--version", action="version", version=f"Dorphan {__version__}")
@@ -149,40 +199,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--helpme", action="store_true", help=argparse.SUPPRESS,
     )
 
-    scan = p.add_argument_group("scan")
-    scan.add_argument(
-        "-m", "--min-size", type=_parse_size, default=0, metavar="SIZE",
-        help="only show folders at least this big, e.g. 100MB, 1G",
-    )
-    scan.add_argument(
-        "--no-program-files", action="store_true",
-        help="skip Program Files; scan data folders only",
-    )
-    scan.add_argument(
-        "-a", "--all", action="store_true",
-        help="also show folders matched to installed apps",
-    )
-    scan.add_argument(
-        "--exclude", action="extend", nargs="+", default=[], metavar="PATTERN",
-        help="exclude folder names/globs from orphan results",
-    )
-    scan.add_argument(
-        "--confidence", choices=["high", "medium"], default="high", metavar="LEVEL",
-        help="minimum orphan confidence: high or medium; default: high",
-    )
-    scan.add_argument(
-        "--json", action="store_true",
-        help="output JSON",
-    )
-
     cleanup = p.add_argument_group("cleanup")
     cleanup.add_argument(
-        "-c", "--clean", action="store_true",
-        help="preview cleanup; deletes nothing",
+        "-s", "--scan", action="store_true",
+        help="preview orphaned folders; deletes nothing",
     )
     cleanup.add_argument(
         "-d", "--delete", action="store_true",
-        help="actually delete; requires --clean",
+        help="delete the orphaned folders",
     )
     cleanup.add_argument(
         "-i", "--interactive", action="store_true",
@@ -191,6 +215,56 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument(
         "--unsafe", action="store_true",
         help="allow shallow deletes; requires -i and Administrator",
+    )
+
+    filters = p.add_argument_group("filters")
+    filters.add_argument(
+        "--confidence", choices=["high", "medium"], default="high", metavar="LEVEL",
+        help="minimum orphan confidence: high or medium; default: high",
+    )
+    filters.add_argument(
+        "--depth", type=int, default=None, metavar="N",
+        help="minimum path depth a folder must have to be deletable "
+             f"(advanced; default {cleaner.DEFAULT_MIN_DEPTH}, needs --unsafe below it)",
+    )
+    filters.add_argument(
+        "-m", "--min-size", type=_parse_size, default=0, metavar="SIZE",
+        help="only show folders at least this big, e.g. 100MB, 1G",
+    )
+    filters.add_argument(
+        "--no-program-files", action="store_true",
+        help="skip Program Files; scan data folders only",
+    )
+    filters.add_argument(
+        "-a", "--all", action="store_true",
+        help="also show folders matched to installed apps",
+    )
+    filters.add_argument(
+        "--exclude", action="extend", nargs="+", default=[], metavar="PATTERN",
+        help="exclude folder names/globs from orphan results",
+    )
+    filters.add_argument(
+        "--json", action="store_true",
+        help="output JSON",
+    )
+
+    recovery_group = p.add_argument_group("recovery")
+    recovery_group.add_argument(
+        "--trash", nargs="?", const="", default=None, metavar="PATH",
+        help="move deleted folders to a restorable trash (optionally at PATH) "
+             "instead of deleting them permanently",
+    )
+    recovery_group.add_argument(
+        "--restore", metavar="ID",
+        help="restore a trashed folder by its id (see --log) and exit",
+    )
+    recovery_group.add_argument(
+        "--log", action="store_true",
+        help="show the recent deletion log and exit",
+    )
+    recovery_group.add_argument(
+        "--prune", action="store_true",
+        help=argparse.SUPPRESS,
     )
 
     config_group = p.add_argument_group("config")
@@ -203,12 +277,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="write a starter config and exit",
     )
 
-    # Hidden from normal help. It is intentionally advanced because lowering
-    # the deletion depth can reach shallow Program Files / ProgramData folders.
-    p.add_argument(
-        "--depth", type=int, default=None, metavar="N",
-        help=argparse.SUPPRESS,
-    )
     p.add_argument(
         "--donate", action="store_true",
         help=argparse.SUPPRESS,
@@ -218,8 +286,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-
-    util.enable_color()  # turn on ANSI on Windows, or fall back to plain text
 
     if not argv:
         print_basic_usage()
@@ -241,15 +307,25 @@ def main(argv: list[str] | None = None) -> int:
         print("Edit it, then run dorphan (it's picked up automatically).")
         return 0
 
-    if args.interactive and (args.clean or args.delete):
-        print("error: choose either -i/--interactive or --clean/--delete, not both.",
-              file=sys.stderr)
+    if args.log:
+        print_deletion_log()
+        return 0
+
+    if args.restore is not None:
+        return run_restore(args.restore)
+
+    if args.prune:
+        return run_prune()
+
+    # --trash only makes sense alongside an actual delete (-d or -i).
+    if args.trash is not None and not (args.delete or args.interactive):
+        print("error: --trash only applies when deleting; use it with "
+              "`dorphan -d` or `dorphan -i`.", file=sys.stderr)
         return 2
 
-    if args.delete and not args.clean:
-        print("error: --delete is only valid with --clean. Use `dorphan -c` "
-              "to preview, or `dorphan -c -d` to delete.",
-              file=sys.stderr)
+    if args.interactive and (args.scan or args.delete):
+        print("error: choose either -i/--interactive or -s/--scan/-d/--delete, "
+              "not both.", file=sys.stderr)
         return 2
 
     # --unsafe is interactive-only: shallow folders may only be removed one at a
@@ -372,13 +448,17 @@ def main(argv: list[str] | None = None) -> int:
         report.print_json(items)
         return 0
 
-    report.print_table(orphans, "Orphaned leftovers (no installed app claims these)",
-                        show_match=True)
-    if args.all:
-        claimed = all_claimed
-        if args.min_size:
-            claimed = [c for c in claimed if c.folder.size >= args.min_size]
-        report.print_table(claimed, "Installed-app folders", show_match=True)
+    # In interactive mode the user reviews each orphan one by one, so the full
+    # table would just repeat what the prompts show. Skip it and let the summary
+    # below give the overall headline before we drop into the y/n loop.
+    if not args.interactive:
+        report.print_table(orphans, "Orphaned leftovers (no installed app claims these)",
+                            show_match=True)
+        if args.all:
+            claimed = all_claimed
+            if args.min_size:
+                claimed = [c for c in claimed if c.folder.size >= args.min_size]
+            report.print_table(claimed, "Installed-app folders", show_match=True)
 
     # Summary counts reflect true totals; the orphan figure honors your filters.
     report.print_summary(orphans, all_claimed, all_system)
@@ -389,25 +469,52 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         count, freed = cleaner.clean_interactive(
             orphans, min_depth=min_depth,
-            on_whitelist=config_mod.add_to_whitelist)
+            on_whitelist=config_mod.add_to_whitelist,
+            recover=args.trash, log=True)
         print()
-        print(f"Freed {human_size(freed)} across {count} folders.")
-    elif args.clean:
-        print()
-        if args.delete:
-            print(report._c("Deleting orphaned folders (largest first)...", "1;31"))
-        else:
-            print(report._c("Dry-run - nothing will be deleted. "
-                            "Re-run with --clean --delete to delete.", "1;33"))
-        count, freed = cleaner.clean(
-            orphans, force=args.delete, min_depth=min_depth)
-        verb = "Freed" if args.delete else "Would free"
-        print()
+        verb = "Recovered" if args.trash is not None else "Freed"
         print(f"{verb} {human_size(freed)} across {count} folders.")
+        if args.trash is not None and count:
+            print("Restore any of them with: dorphan --restore <id>  "
+                  "(see dorphan --log)")
+    elif args.scan or args.delete:
+        print()
+        recovering = args.trash is not None
+        deletable, _refused = cleaner.partition_orphans(orphans, min_depth)
+        if args.delete:
+            if deletable and not _confirm_bulk_delete(len(deletable), recovering):
+                print("Aborted. Nothing deleted.")
+                return 0
+            if deletable:
+                msg = ("Moving orphaned folders to recovery (largest first)..."
+                       if recovering else
+                       "Deleting orphaned folders (largest first)...")
+                print(msg)
+        else:
+            print("Dry-run - nothing will be deleted. "
+                  "Re-run with -d to delete.")
+        count, freed = cleaner.clean(
+            orphans, force=args.delete, min_depth=min_depth,
+            recover=args.trash, log=True)
+        print()
+        if count:
+            if not args.delete:
+                verb = "Would free"
+            else:
+                verb = "Recovered" if recovering else "Freed"
+            print(f"{verb} {human_size(freed)} across {count} folders.")
+            if recovering and args.delete:
+                print("Restore any of them with: dorphan --restore <id>  "
+                      "(see dorphan --log)")
+        elif deletable:  # had targets but every delete failed (locked files, ...)
+            print("No folders were removed (all delete attempts failed).")
+        else:
+            print("Nothing here is bulk-deletable. Use `dorphan -i` to review "
+                  "folders one by one.")
     elif orphans:
         print()
         print("Tip: review the list above, then run "
-              "`dorphan --clean` to preview, or `dorphan -i` to delete one by one.")
+              "`dorphan --scan` to preview, or `dorphan -i` to delete one by one.")
 
     return 0
 

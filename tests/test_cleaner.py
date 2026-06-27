@@ -57,6 +57,47 @@ class TestSafety(unittest.TestCase):
     def test_drive_root_never_deletable(self):
         self.assertIsNotNone(cleaner._target_refusal("C:\\", min_depth=1))
 
+    def test_own_config_dir_is_protected(self):
+        # dorphan must never delete its own %APPDATA%\dorphan config folder.
+        from dorphan import config
+        reason = cleaner._target_refusal(config.config_dir(), min_depth=cleaner.ABSOLUTE_MIN_DEPTH)
+        self.assertIsNotNone(reason)
+        self.assertIn("protected", reason)
+
+
+class TestPartition(unittest.TestCase):
+    def test_splits_deletable_from_refused_and_orders_by_size(self):
+        with tempfile.TemporaryDirectory() as d:
+            big = make_tree(d, "Big", n_files=5)
+            small = make_tree(d, "Small", n_files=1)
+            shallow = Classified(
+                Folder(path=r"C:\Program Files\Foo", name="Foo",
+                       root_label="Program Files", size=999, files=1),
+                "orphan", confidence="high")
+            deletable, refused = cleaner.partition_orphans([small, shallow, big])
+            self.assertEqual([c.folder.name for c in deletable], ["Big", "Small"])
+            self.assertEqual(len(refused), 1)
+            self.assertEqual(refused[0][0].folder.name, "Foo")
+            self.assertIn("depth", refused[0][1])
+
+    def test_clean_excludes_refused_from_numbered_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            ok = make_tree(d, "Keepable", n_files=2)
+            shallow = Classified(
+                Folder(path=r"C:\Program Files\Foo", name="Foo",
+                       root_label="Program Files", size=1, files=1),
+                "orphan", confidence="high")
+            with mock.patch("builtins.print") as out:
+                count, freed = cleaner.clean([ok, shallow], force=False)
+            self.assertEqual(count, 1)  # only the deletable one counted
+            printed = "\n".join(str(c.args[0]) for c in out.call_args_list if c.args)
+            self.assertIn("would delete", printed)   # the deletable folder
+            self.assertIn("Keepable", printed)       # ...is named in the list
+            # Refused folders are summarized as a count, not enumerated per-line.
+            self.assertIn("1 orphan(s)", printed)
+            self.assertIn("--unsafe", printed)
+            self.assertNotIn(r"C:\Program Files\Foo", printed)  # no per-folder dump
+
 
 class TestDelete(unittest.TestCase):
     def test_delete_removes_tree_and_reports_progress(self):
@@ -186,6 +227,72 @@ class TestInteractive(unittest.TestCase):
             self.assertEqual(count, 1)
             self.assertEqual(seen["min_depth"], 3)
             self.assertFalse(os.path.exists(a.folder.path))
+
+
+def _make_dir_link(link, target):
+    """Create a directory junction (Windows) or dir symlink (POSIX).
+
+    Returns True on success. Junctions need no privilege; Windows symlinks and
+    some sandboxes do, so callers skip the test when this returns False.
+    """
+    if os.name == "nt":
+        import subprocess
+        try:
+            r = subprocess.run(["cmd", "/c", "mklink", "/J", link, target],
+                               capture_output=True)
+            return r.returncode == 0 and os.path.exists(link)
+        except OSError:
+            return False
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError, AttributeError):
+        return False
+
+
+class TestReparseSafety(unittest.TestCase):
+    """Deletion must never cross a junction/symlink into its target (C-1/C-2)."""
+
+    def test_delete_does_not_cross_a_junction(self):
+        with tempfile.TemporaryDirectory() as d:
+            victim = os.path.join(d, "victim")
+            os.makedirs(victim)
+            precious = os.path.join(victim, "precious.txt")
+            with open(precious, "wb") as fh:
+                fh.write(b"keep me")
+            orphan = os.path.join(d, "lvl1", "lvl2", "Orphan")
+            os.makedirs(orphan)
+            link = os.path.join(orphan, "link")
+            if not _make_dir_link(link, victim):
+                self.skipTest("cannot create junctions/symlinks here")
+            ok, msg = cleaner.delete(orphan)
+            self.assertTrue(ok, msg)
+            self.assertFalse(os.path.exists(orphan))     # orphan removed
+            self.assertTrue(os.path.exists(precious))    # target untouched
+
+    def test_delete_refuses_a_reparse_point_target(self):
+        with tempfile.TemporaryDirectory() as d:
+            victim = os.path.join(d, "victim")
+            os.makedirs(victim)
+            link = os.path.join(d, "lvl1", "lvl2", "linkdir")
+            os.makedirs(os.path.dirname(link))
+            if not _make_dir_link(link, victim):
+                self.skipTest("cannot create junctions/symlinks here")
+            ok, msg = cleaner.delete(link)
+            self.assertFalse(ok)
+            self.assertIn("reparse", msg)
+            self.assertTrue(os.path.exists(victim))      # target survived
+
+
+class TestProtectedPaths(unittest.TestCase):
+    def test_canonical_roots_protected_without_env(self):
+        # With the environment wiped, the big trees must STILL be protected
+        # because they're anchored to the system drive, not read from env (M-1).
+        with mock.patch.dict(os.environ, {}, clear=True):
+            prot = cleaner._protected_paths()
+        for p in ("C:\\", r"C:\Windows", r"C:\Program Files",
+                  r"C:\Program Files (x86)", r"C:\ProgramData", r"C:\Users"):
+            self.assertIn(cleaner._norm_key(p), prot)
 
 
 if __name__ == "__main__":

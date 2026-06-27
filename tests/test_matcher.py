@@ -104,6 +104,19 @@ class TestMatcher(unittest.TestCase):
             self.assertEqual(c.status, "claimed")
             self.assertIn("install dir", c.matched_app)
 
+    def test_own_config_dir_is_never_orphan(self):
+        # Regression: dorphan's own %APPDATA%\dorphan config folder has no
+        # registry entry, so it used to be flagged (and could be deleted).
+        c = self.m.classify(folder("dorphan", path=config.config_dir()))
+        self.assertEqual(c.status, "system")
+
+    def test_pip_package_name_claims_folder(self):
+        # A folder named after an installed pip package (e.g. an editable dev
+        # tool with no registry entry) is claimed, not orphaned.
+        inv = Inventory(apps=[InstalledApp(name="appcleanx", source="pip")])
+        m = Matcher(inv, self.cfg)
+        self.assertEqual(m.classify(folder("appcleanx")).status, "claimed")
+
 
 if __name__ == "__main__":
     unittest.main()

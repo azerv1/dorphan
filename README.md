@@ -1,7 +1,9 @@
 # Dorphan
 
+Delete orphan app files of already uninstalled apps that Windows can't find.
+
 > [!WARNING]
-> Dorphan was vibe coded by me using Claude Opus and has not been exhaustively tested.
+> Dorphan was vibe coded by me using Claude Opus.
 > The default command only scans and reports; it does not delete files.
 > Always review the report and run a dry-run before deleting anything.
 
@@ -44,7 +46,7 @@ pip install git+https://github.com/azerv1/dorphan
 Scan and report likely orphaned folders:
 
 ```powershell
-dorphan -c
+dorphan --scan
 ```
 
 Show only large leftovers:
@@ -56,7 +58,7 @@ dorphan -m 100MB
 Delete after reviewing the dry-run:
 
 ```powershell
-dorphan -c -d
+dorphan -d
 ```
 
 Delete interactively, confirming each folder one by one:
@@ -65,7 +67,7 @@ Delete interactively, confirming each folder one by one:
 dorphan -i
 ```
 
-At each prompt: `y` delete, `n` keep, `l` list contents (descends through single nested subfolders), `w` whitelist so it's never scanned again, `a` all remaining, `q` quit.
+At each prompt: `y` delete, `n` keep, `l` list contents (descends through single nested subfolders), `w` whitelist so it's never scanned again, `q` quit. There is no bulk "delete all" shortcut — every folder is confirmed individually.
 
 ## Common options
 
@@ -97,8 +99,8 @@ Dorphan is designed to make accidental deletion harder, but it is still a deleti
 
 Safety rules:
 
-- `dorphan, dorphan -c` is a dry-run and deletes nothing.
-- Bulk deletion requires both flags: `dorphan -c -d`.
+- `dorphan --scan` is a dry-run and deletes nothing.
+- Bulk deletion requires `dorphan -d`; it asks for confirmation before removing anything.
 - Interactive deletion with `dorphan -i` asks before each folder.
 - `--unsafe` only works with `-i`; shallow folders must be confirmed one by one and requires an elevated Administrator terminal.
 - Protected roots such as `C:\Windows`, `C:\Program Files`, `C:\ProgramData`, `C:\Users`, profile roots, drive roots, and anything shallower than depth 3 are refused.
@@ -193,16 +195,6 @@ Examples of ignored/system-style folders include:
 - `pip`
 - `uv`
 - `cargo`
-
-The matcher is heuristic. It errs toward not deleting automatically, but false positives are still possible.
-
-## JSON output
-
-You can combine JSON with filters:
-
-```powershell
-dorphan --json -m 100MB --confidence medium
-```
 
 ## License
 

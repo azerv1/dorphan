@@ -154,15 +154,36 @@ def _defaults() -> Config:
     )
 
 
-def default_config_path() -> str:
+def config_dir() -> str:
+    """Dorphan's own settings folder (%APPDATA%\\dorphan).
+
+    It holds config.toml and whitelist.txt. Nothing in the registry claims it,
+    so without special-casing it dorphan would flag — and could delete — its own
+    config. matcher treats it as system and cleaner refuses to delete it.
+    """
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "dorphan", "config.toml")
+    return os.path.join(base, "dorphan")
+
+
+def data_dir() -> str:
+    """Local (non-roaming) state folder (%LOCALAPPDATA%\\dorphan).
+
+    Holds the deletion log and the recovery trash. Kept under LOCALAPPDATA, not
+    the roaming config dir, so quarantined folders (potentially large) never sync
+    and survive config edits. See recovery.py.
+    """
+    base = (os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+            or os.path.expanduser("~"))
+    return os.path.join(base, "dorphan")
+
+
+def default_config_path() -> str:
+    return os.path.join(config_dir(), "config.toml")
 
 
 def whitelist_path() -> str:
     """Plain-text list of folder names the user whitelisted via `dorphan -i` (w)."""
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "dorphan", "whitelist.txt")
+    return os.path.join(config_dir(), "whitelist.txt")
 
 
 def load_whitelist(path: str | None = None) -> list[str]:

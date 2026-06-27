@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import sys
 
 
@@ -33,45 +34,6 @@ def progress_done() -> None:
         sys.stderr.flush()
         _progress_len = 0
 
-
-_color_enabled = False
-
-
-def enable_color() -> bool:
-    """Turn on ANSI color for this run and report whether it's usable.
-
-    Windows consoles print raw escapes (you'd see `←[1m`) unless we opt in via
-    SetConsoleMode's virtual-terminal flag. If that fails, output is redirected,
-    or NO_COLOR is set, color stays off and callers fall back to plain text.
-    """
-    global _color_enabled
-    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
-        _color_enabled = False
-        return False
-    if sys.platform != "win32":
-        _color_enabled = True
-        return True
-    try:
-        import ctypes
-
-        k32 = ctypes.windll.kernel32
-        enable_vt = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-        ok = False
-        for handle_id in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
-            handle = k32.GetStdHandle(handle_id)
-            mode = ctypes.c_uint32()
-            if k32.GetConsoleMode(handle, ctypes.byref(mode)):
-                k32.SetConsoleMode(handle, mode.value | enable_vt)
-                ok = True
-        _color_enabled = ok
-    except Exception:  # pragma: no cover - defensive; assume no color
-        _color_enabled = False
-    return _color_enabled
-
-
-def supports_color() -> bool:
-    """True if ANSI color was successfully enabled this run (see enable_color)."""
-    return _color_enabled
 
 _NORM_RE = re.compile(r"[^a-z0-9]+")
 
@@ -120,6 +82,32 @@ def is_elevated() -> bool:
         return False
 
 
+def _is_reparse_stat(st) -> bool:
+    """True if an os.stat_result describes a symlink OR any reparse point."""
+    if st is None:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    # Windows junctions/mount points are reparse points but NOT symlinks, so
+    # S_ISLNK / os.path.islink miss them. This flag catches them too.
+    attrs = getattr(st, "st_file_attributes", 0)
+    return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def is_reparse_point(path: str) -> bool:
+    """True if `path` is a symlink or a junction/mount point (any reparse point).
+
+    `os.path.islink` and `DirEntry.is_symlink()` only report true symlinks, so
+    code that relies on them will happily recurse THROUGH an NTFS junction into
+    its target. Deletion and sizing must use this instead to stay inside the
+    folder they were handed.
+    """
+    try:
+        return _is_reparse_stat(os.lstat(path))
+    except (OSError, ValueError):
+        return False
+
+
 def human_size(num_bytes: int) -> str:
     """Format a byte count as a human-readable string."""
     size = float(num_bytes)
@@ -143,12 +131,16 @@ def dir_size(path: str) -> tuple[int, int]:
             with os.scandir(current) as it:
                 for entry in it:
                     try:
-                        if entry.is_symlink():
+                        st = entry.stat(follow_symlinks=False)
+                        # Skip symlinks AND junctions: descending a junction
+                        # would leave this tree (and a junction cycle would
+                        # loop forever, since there is no visited set).
+                        if _is_reparse_stat(st):
                             continue
-                        if entry.is_dir(follow_symlinks=False):
+                        if stat.S_ISDIR(st.st_mode):
                             stack.append(entry.path)
-                        elif entry.is_file(follow_symlinks=False):
-                            total += entry.stat(follow_symlinks=False).st_size
+                        elif stat.S_ISREG(st.st_mode):
+                            total += st.st_size
                             count += 1
                     except (OSError, ValueError):
                         continue

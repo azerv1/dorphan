@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import Config
+import os
+
+from .config import Config, config_dir
 from .inventory import Inventory
 from .scanner import Folder
 from .util import normalize, tokens
+
+# Dorphan's own settings folder is never registered as an installed app, so
+# without this it would classify (and could delete) its own config/whitelist.
+_OWN_CONFIG_DIR = os.path.normcase(os.path.normpath(config_dir()))
 
 
 @dataclass
@@ -112,6 +118,10 @@ class Matcher:
         return f"(install dir) {os.path.basename(loc) or loc}"
 
     def classify(self, folder: Folder) -> Classified:
+        # Never flag dorphan's own config folder as an orphan (it would otherwise
+        # look unclaimed and get offered up for deletion — deleting your config).
+        if os.path.normcase(os.path.normpath(folder.path)) == _OWN_CONFIG_DIR:
+            return Classified(folder, "system")
         fnorm = normalize(folder.name)
         # A name that normalizes to nothing is a localized/symbol-only shell
         # folder (e.g. the Greek "Επιφάνεια εργασίας" = Desktop). We can't reason

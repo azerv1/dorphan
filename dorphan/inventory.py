@@ -157,11 +157,71 @@ def _scan_store_apps() -> list[InstalledApp]:
     return apps
 
 
-def collect() -> Inventory:
-    """Gather installed apps from all registry sources, de-duplicated."""
-    if winreg is None:
-        return Inventory(apps=[])
-    all_apps = _scan_uninstall() + _scan_app_paths() + _scan_store_apps()
+def _editable_location(dist) -> str:
+    """Project directory for an editable (`pip install -e`) install, else "".
+
+    Editable installs record their source tree in direct_url.json with
+    dir_info.editable = true; that folder (e.g. C:\\Users\\me\\projects\\dorphan)
+    is a real install location worth matching against.
+    """
+    import json
+
+    try:
+        raw = dist.read_text("direct_url.json")
+    except Exception:  # pragma: no cover - metadata layout varies
+        raw = None
+    if not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ""
+    info = data.get("dir_info") or {}
+    url = data.get("url", "")
+    if info.get("editable") and url.startswith("file:"):
+        from urllib.request import url2pathname
+        from urllib.parse import urlparse
+
+        return url2pathname(urlparse(url).path)
+    return ""
+
+
+def _scan_python_packages() -> list[InstalledApp]:
+    """Packages installed in the running interpreter (same set as `pip list`).
+
+    Uses stdlib importlib.metadata (no subprocess), so it's fast and can't hang.
+    Catches dev tools that have no registry entry — e.g. an editable install of
+    `dorphan` itself — so their data folders aren't mistaken for orphans.
+    """
+    try:
+        from importlib import metadata
+    except ImportError:  # pragma: no cover - importlib.metadata is 3.8+
+        return []
+    apps: list[InstalledApp] = []
+    try:
+        dists = list(metadata.distributions())
+    except Exception:  # pragma: no cover - defensive: never break a scan
+        return []
+    for dist in dists:
+        try:
+            name = (dist.metadata["Name"] or "").strip()
+        except Exception:
+            name = ""
+        if not name:
+            continue
+        apps.append(
+            InstalledApp(
+                name=name,
+                install_location=_editable_location(dist),
+                source="pip",
+                raw_key=f"pip/{name}",
+            )
+        )
+    return apps
+
+
+def _dedupe(all_apps: list[InstalledApp]) -> Inventory:
+    """Drop entries sharing a (name, install_location) pair, preserving order."""
     seen: set[tuple[str, str]] = set()
     deduped: list[InstalledApp] = []
     for app in all_apps:
@@ -171,3 +231,12 @@ def collect() -> Inventory:
         seen.add(key)
         deduped.append(app)
     return Inventory(apps=deduped)
+
+
+def collect() -> Inventory:
+    """Gather installed apps from all registry sources, de-duplicated."""
+    pkgs = _scan_python_packages()  # cross-platform; safe even off Windows
+    if winreg is None:
+        return _dedupe(pkgs)
+    all_apps = _scan_uninstall() + _scan_app_paths() + _scan_store_apps() + pkgs
+    return _dedupe(all_apps)

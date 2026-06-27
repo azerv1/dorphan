@@ -18,6 +18,14 @@ class TestParseSize(unittest.TestCase):
         with self.assertRaises(Exception):
             cli._parse_size("notasize")
 
+    def test_infinity_is_rejected_not_crashed(self):
+        # 'inf' parses as a float but int(inf) raises OverflowError; it must come
+        # back as a clean argparse error, not an uncaught traceback (M-3).
+        import argparse
+        for bad in ("inf", "1e400", "-inf"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                cli._parse_size(bad)
+
 
 class TestExcluded(unittest.TestCase):
     def test_glob_on_name(self):
@@ -68,9 +76,9 @@ class TestDepthGate(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("-i", err.getvalue())
 
-    def test_unsafe_with_clean_delete_errors(self):
+    def test_unsafe_with_bulk_delete_errors(self):
         with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["-c", "-d", "--unsafe"]), 2)
+            self.assertEqual(cli.main(["-d", "--unsafe"]), 2)
 
     def test_unsafe_requires_elevation(self):
         # -i --unsafe clears the earlier gates but, without admin rights, must
@@ -90,17 +98,113 @@ class TestDepthGate(unittest.TestCase):
         self.assertNotIn("Administrator", err.getvalue())
 
 
+class TestConfirmBulkDelete(unittest.TestCase):
+    def _run(self, isatty, answer):
+        fake_stdin = mock.Mock()
+        fake_stdin.isatty.return_value = isatty
+        with mock.patch.object(cli.sys, "stdin", fake_stdin), \
+                mock.patch.object(cli, "input", create=True,
+                                  return_value=answer) as inp, \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            result = cli._confirm_bulk_delete(3)
+        return result, inp, out.getvalue(), err.getvalue()
+
+    def test_yes_proceeds_and_warns(self):
+        ok, _, stdout, _ = self._run(True, "yes")
+        self.assertTrue(ok)
+        self.assertIn("dorphan --scan", stdout)
+
+    def test_y_proceeds(self):
+        ok, _, _, _ = self._run(True, "y")
+        self.assertTrue(ok)
+
+    def test_anything_else_aborts(self):
+        ok, _, _, _ = self._run(True, "no")
+        self.assertFalse(ok)
+
+    def test_non_tty_refuses_without_prompting(self):
+        ok, inp, _, err = self._run(False, "yes")
+        self.assertFalse(ok)
+        inp.assert_not_called()
+        self.assertIn("interactive terminal", err)
+
+
+class TestRecoveryFlags(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._old = os.environ.get("LOCALAPPDATA")
+        os.environ["LOCALAPPDATA"] = self._tmp.name
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = self._old
+
+    def test_trash_without_delete_mode_errors(self):
+        # --trash only makes sense with an actual delete; it must reject early
+        # (return 2) rather than fall through into a scan.
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = cli.main(["--trash"])
+        self.assertEqual(rc, 2)
+        self.assertIn("--trash", err.getvalue())
+
+    def test_trash_is_optional_path(self):
+        args = cli.build_parser().parse_args(["-d", "--trash"])
+        self.assertEqual(args.trash, "")  # bare flag -> default trash
+        args2 = cli.build_parser().parse_args(["-i", "--trash", r"D:\trash"])
+        self.assertEqual(args2.trash, r"D:\trash")
+        self.assertIsNone(cli.build_parser().parse_args([]).trash)
+
+    def test_log_on_empty_exits_zero(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = cli.main(["--log"])
+        self.assertEqual(rc, 0)
+        self.assertIn("No deletions logged yet", out.getvalue())
+
+    def test_restore_unknown_id_returns_one(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = cli.main(["--restore", "nope12"])
+        self.assertEqual(rc, 1)
+        self.assertIn("no recovery entry", err.getvalue())
+
+    def test_prune_exits_zero(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = cli.main(["--prune"])
+        self.assertEqual(rc, 0)
+        self.assertIn("Purged", out.getvalue())
+
+    def test_confirm_wording_softens_for_recover(self):
+        fake_stdin = mock.Mock()
+        fake_stdin.isatty.return_value = True
+        with mock.patch.object(cli.sys, "stdin", fake_stdin), \
+                mock.patch.object(cli, "input", create=True, return_value="yes"), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            cli._confirm_bulk_delete(3, recover=True)
+        self.assertIn("recovery", out.getvalue())
+        self.assertNotIn("permanently DELETE", out.getvalue())
+
+
 class TestParserBuilds(unittest.TestCase):
     def test_short_flags_and_confidence(self):
         p = cli.build_parser()
-        args = p.parse_args(["-a", "-c", "-d", "-i", "-m", "10mb",
+        args = p.parse_args(["-a", "-s", "-d", "-i", "-m", "10mb",
                              "--confidence", "high"])
         self.assertTrue(args.all)
-        self.assertTrue(args.clean)
+        self.assertTrue(args.scan)
         self.assertTrue(args.delete)
         self.assertTrue(args.interactive)
         self.assertEqual(args.min_size, 10 * 1024 ** 2)
         self.assertEqual(args.confidence, "high")
+
+    def test_delete_works_without_scan(self):
+        # -d no longer requires -s/--scan; it stands alone.
+        args = cli.build_parser().parse_args(["-d"])
+        self.assertTrue(args.delete)
+        self.assertFalse(args.scan)
 
     def test_confidence_defaults_to_high(self):
         args = cli.build_parser().parse_args([])

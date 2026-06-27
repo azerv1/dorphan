@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from .util import is_reparse_point
+
 
 @dataclass
 class Folder:
@@ -45,6 +47,11 @@ def enumerate_folders(
                 for entry in it:
                     try:
                         if not entry.is_dir(follow_symlinks=False):
+                            continue
+                        # A junction/symlink reports as a directory but points
+                        # elsewhere; never offer it as a deletion candidate, or
+                        # deleting it would reach into its target.
+                        if is_reparse_point(entry.path):
                             continue
                     except OSError:
                         continue
