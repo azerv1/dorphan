@@ -7,8 +7,8 @@ Two independent pieces, both living under %LOCALAPPDATA%\\dorphan (config.data_d
   trash/index.json  manifest: id -> {orig, t, size, files, name}
 
 By default a delete is permanent and only the log line is written (a record of
-what went, so nothing vanishes silently again). With `dorphan --trash` the
-folder is *moved* into trash instead, restorable via `dorphan --restore <id>`.
+what went, so nothing vanishes silently again). With `dorphan delete --trash` the
+folder is *moved* into trash instead, restorable via `dorphan restore <id>`.
 The trash is bounded by a byte cap; the oldest entries are evicted when it's
 exceeded, so recovery never grows the disk without limit.
 

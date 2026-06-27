@@ -4,8 +4,8 @@ Delete orphan app files of already uninstalled apps that Windows can't find.
 
 > [!WARNING]
 > Dorphan was vibe coded by me using Claude Opus.
-> The default command only scans and reports; it does not delete files.
-> Always review the report and run a dry-run before deleting anything.
+> `dorphan scan` only reports; it never deletes. Deleting is a separate command, `dorphan delete`.
+> Always review the report with `dorphan scan` before deleting anything.
 
 Dorphan finds and deletes orphan Windows application folders from apps that appear to be uninstalled.
 
@@ -43,66 +43,68 @@ pip install git+https://github.com/azerv1/dorphan
 
 ## Quick start
 
-Scan and report likely orphaned folders:
+Dorphan uses subcommands. The two you'll use most:
+
+Scan and report likely orphaned folders (read-only):
 
 ```powershell
-dorphan --scan
+dorphan scan
 ```
 
 Show only large leftovers:
 
 ```powershell
-dorphan -m 100MB
+dorphan scan -m 100MB
 ```
 
-Delete after reviewing the dry-run:
+Delete after reviewing the report (asks once before removing anything):
 
 ```powershell
-dorphan -d
+dorphan delete
 ```
 
 Delete interactively, confirming each folder one by one:
 
 ```powershell
-dorphan -i
+dorphan delete -i
 ```
 
 At each prompt: `y` delete, `n` keep, `l` list contents (descends through single nested subfolders), `w` whitelist so it's never scanned again, `q` quit. There is no bulk "delete all" shortcut — every folder is confirmed individually.
 
-## Common options
+## Commands
 
 ```text
-dorphan                      scan and report orphaned leftovers
-dorphan -m 100MB             only show folders >= 100 MB
-dorphan --no-program-files   scan data folders only; faster
-dorphan -a                   also show folders matched to installed apps
-dorphan --exclude npm* yarn  hide matching folder names/globs
-dorphan --confidence medium  include medium-confidence guesses
-dorphan --json               output JSON
+dorphan scan        list orphaned folders (read-only)
+dorphan delete      delete them (asks first; add -i to confirm each)
+dorphan restore ID  restore a folder from the trash
+dorphan log         show the deletion log
+dorphan prune       empty the recoverable trash
+dorphan config init write a starter config
 ```
 
-Run this for the full CLI help:
+Filters and `--json` are options on `scan`/`delete`, not commands of their own:
 
-```powershell
-dorphan --help
+```text
+dorphan scan -m 100MB             only show folders >= 100 MB
+dorphan scan --no-program-files   scan data folders only; faster
+dorphan scan -a                   also show folders matched to installed apps
+dorphan scan --exclude npm* yarn  hide matching folder names/globs
+dorphan scan --confidence medium  include medium-confidence guesses
+dorphan scan --json               output JSON
 ```
 
-Run this for advanced/safety details:
+Run `dorphan <command> -h` to see a command's own options, or `dorphan --help` for the full help (commands, examples, and safety notes).
 
-```powershell
-dorphan --helpme
-```
-
-Safety
+## Safety
 
 Dorphan is designed to make accidental deletion harder, but it is still a deletion tool. Review the output before removing anything.
 
 Safety rules:
 
-- `dorphan --scan` is a dry-run and deletes nothing.
-- Bulk deletion requires `dorphan -d`; it asks for confirmation before removing anything.
-- Interactive deletion with `dorphan -i` asks before each folder.
-- `--unsafe` only works with `-i`; shallow folders must be confirmed one by one and requires an elevated Administrator terminal.
+- `dorphan scan` is read-only and deletes nothing.
+- Bulk deletion (`dorphan delete`) asks for confirmation before removing anything.
+- Interactive deletion (`dorphan delete -i`) asks before each folder.
+- `--unsafe` only works with `delete -i`; shallow folders must be confirmed one by one and requires an elevated Administrator terminal.
 - Protected roots such as `C:\Windows`, `C:\Program Files`, `C:\ProgramData`, `C:\Users`, profile roots, drive roots, and anything shallower than depth 3 are refused.
 - Known Windows, system, framework, package-manager, and dev-tool folders are excluded from orphan results by default.
 
@@ -118,7 +120,7 @@ C:\ProgramData\SomeVendor
 To remove shallow folders, use:
 
 ```powershell
-dorphan -i --unsafe [--depth 3]
+dorphan delete -i --unsafe [--depth 3]
 ```
 
 This mode:
@@ -129,20 +131,39 @@ This mode:
 - still refuses protected system roots;
 - never allows bulk deletion of shallow folders.
 
+## Recovery
+
+Deletes are permanent by default, but every deletion is recorded to a compact log under `%LOCALAPPDATA%\dorphan`, so nothing vanishes silently:
+
+```powershell
+dorphan log
+```
+
+To make deletions restorable, add `--trash` to a delete. Instead of removing folders, Dorphan moves them to a recoverable bin (a kind of trash) that you can restore from later:
+
+```powershell
+dorphan delete --trash         # delete to the recoverable bin
+dorphan delete -i --trash      # same, one folder at a time
+dorphan restore <id>           # put a trashed folder back (id comes from `dorphan log`)
+dorphan prune                  # empty the bin for good
+```
+
+The bin is size-capped; when it fills up the oldest entries are evicted automatically, so recovery never grows the disk without limit. You can point the bin at a custom location with `dorphan delete --trash D:\path`.
+
 ## Filtering
 
 Exclude noisy or known-safe folders:
 
 ```powershell
-dorphan --exclude npm* yarn Cursor
+dorphan scan --exclude npm* yarn Cursor
 ```
 
-`--exclude` matches:
+`--exclude` matches a folder when the pattern matches its name or full path. Each pattern is treated as a case-insensitive glob (`npm*`) and as a plain substring (`quote` matches `MetaQuotes`).
 
 Change confidence level:
 
 ```powershell
-dorphan --confidence medium
+dorphan scan --confidence medium
 ```
 
 Confidence levels:
@@ -155,13 +176,19 @@ Confidence levels:
 Generate a starter config:
 
 ```powershell
-dorphan --init-config
+dorphan config init
 ```
 
-Use a specific config file:
+See where the config, whitelist, and trash live:
 
 ```powershell
-dorphan --config my.toml
+dorphan config path
+```
+
+Use a specific config file for a run (option on `scan`/`delete`):
+
+```powershell
+dorphan scan --config my.toml
 ```
 
 A config only needs to include the keys you want to override:
@@ -179,7 +206,8 @@ Dorphan builds an installed-app inventory from:
 - machine-wide 32-bit uninstall keys;
 - per-user uninstall keys;
 - App Paths;
-- Store/MSIX packages.
+- Store/MSIX packages;
+- pip-installed Python packages (including editable installs), so their folders aren't flagged as orphans.
 
 A scanned folder is considered claimed when its name appears to match an installed app's display name, publisher, or install location. Matching uses exact matches, substrings, and token overlap.
 

@@ -59,33 +59,29 @@ class TestDonate(unittest.TestCase):
 class TestDepthGate(unittest.TestCase):
     def test_low_depth_without_unsafe_errors_before_scanning(self):
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = cli.main(["--depth", "3"])
+            rc = cli.main(["delete", "--depth", "3"])
         self.assertEqual(rc, 2)
         self.assertIn("--unsafe", err.getvalue())
 
     def test_depth_two_also_gated(self):
         with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["--depth", "2"]), 2)
+            self.assertEqual(cli.main(["delete", "--depth", "2"]), 2)
 
     def test_depth_default_is_none(self):
-        self.assertIsNone(cli.build_parser().parse_args([]).depth)
+        self.assertIsNone(cli.build_parser().parse_args(["delete"]).depth)
 
     def test_unsafe_without_interactive_errors(self):
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = cli.main(["--unsafe"])
+            rc = cli.main(["delete", "--unsafe"])
         self.assertEqual(rc, 2)
         self.assertIn("-i", err.getvalue())
 
-    def test_unsafe_with_bulk_delete_errors(self):
-        with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["-d", "--unsafe"]), 2)
-
     def test_unsafe_requires_elevation(self):
-        # -i --unsafe clears the earlier gates but, without admin rights, must
-        # stop before scanning rather than fail every shallow delete later.
+        # delete -i --unsafe clears the earlier gates but, without admin rights,
+        # must stop before scanning rather than fail every shallow delete later.
         with mock.patch("dorphan.util.is_elevated", return_value=False), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = cli.main(["-i", "--unsafe"])
+            rc = cli.main(["delete", "-i", "--unsafe"])
         self.assertEqual(rc, 2)
         self.assertIn("Administrator", err.getvalue())
 
@@ -94,8 +90,38 @@ class TestDepthGate(unittest.TestCase):
         # check must not short-circuit it here.
         with mock.patch("dorphan.util.is_elevated", return_value=False), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
-            cli.main(["--depth", "3"])  # gated for a different reason (no --unsafe)
+            cli.main(["delete", "--depth", "3"])  # gated for no --unsafe instead
         self.assertNotIn("Administrator", err.getvalue())
+
+
+class TestCommandDispatch(unittest.TestCase):
+    """A command is required; bare filters are a parse error, not a silent scan."""
+
+    def test_no_args_prints_usage(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = cli.main([])
+        self.assertEqual(rc, 0)
+        self.assertIn("Commands:", out.getvalue())
+
+    def test_bare_filter_is_a_parse_error(self):
+        # -m lives on `scan`/`delete`, not the top level, so a lone `dorphan -m`
+        # is rejected by argparse (SystemExit) rather than doing anything.
+        with contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as ctx:
+            cli.main(["-m", "100MB"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_unknown_command_is_a_parse_error(self):
+        with contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit):
+            cli.main(["frobnicate"])
+
+    def test_scan_accepts_filters(self):
+        args = cli.build_parser().parse_args(["scan", "-m", "100MB", "-a", "--json"])
+        self.assertEqual(args.command, "scan")
+        self.assertEqual(args.min_size, 100 * 1024 ** 2)
+        self.assertTrue(args.all)
+        self.assertTrue(args.json)
 
 
 class TestConfirmBulkDelete(unittest.TestCase):
@@ -113,7 +139,7 @@ class TestConfirmBulkDelete(unittest.TestCase):
     def test_yes_proceeds_and_warns(self):
         ok, _, stdout, _ = self._run(True, "yes")
         self.assertTrue(ok)
-        self.assertIn("dorphan --scan", stdout)
+        self.assertIn("dorphan scan", stdout)
 
     def test_y_proceeds(self):
         ok, _, _, _ = self._run(True, "y")
@@ -144,36 +170,34 @@ class TestRecoveryFlags(unittest.TestCase):
         else:
             os.environ["LOCALAPPDATA"] = self._old
 
-    def test_trash_without_delete_mode_errors(self):
-        # --trash only makes sense with an actual delete; it must reject early
-        # (return 2) rather than fall through into a scan.
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = cli.main(["--trash"])
-        self.assertEqual(rc, 2)
-        self.assertIn("--trash", err.getvalue())
+    def test_trash_is_a_delete_only_flag(self):
+        # --trash lives on `delete`, so a bare `dorphan --trash` is a parse error.
+        with contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit):
+            cli.main(["--trash"])
 
     def test_trash_is_optional_path(self):
-        args = cli.build_parser().parse_args(["-d", "--trash"])
+        args = cli.build_parser().parse_args(["delete", "--trash"])
         self.assertEqual(args.trash, "")  # bare flag -> default trash
-        args2 = cli.build_parser().parse_args(["-i", "--trash", r"D:\trash"])
+        args2 = cli.build_parser().parse_args(["delete", "-i", "--trash", r"D:\trash"])
         self.assertEqual(args2.trash, r"D:\trash")
-        self.assertIsNone(cli.build_parser().parse_args([]).trash)
+        self.assertIsNone(cli.build_parser().parse_args(["delete"]).trash)
 
     def test_log_on_empty_exits_zero(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            rc = cli.main(["--log"])
+            rc = cli.main(["log"])
         self.assertEqual(rc, 0)
         self.assertIn("No deletions logged yet", out.getvalue())
 
     def test_restore_unknown_id_returns_one(self):
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = cli.main(["--restore", "nope12"])
+            rc = cli.main(["restore", "nope12"])
         self.assertEqual(rc, 1)
         self.assertIn("no recovery entry", err.getvalue())
 
     def test_prune_exits_zero(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            rc = cli.main(["--prune"])
+            rc = cli.main(["prune"])
         self.assertEqual(rc, 0)
         self.assertIn("Purged", out.getvalue())
 
@@ -189,31 +213,39 @@ class TestRecoveryFlags(unittest.TestCase):
 
 
 class TestParserBuilds(unittest.TestCase):
-    def test_short_flags_and_confidence(self):
+    def test_delete_flags_and_confidence(self):
         p = cli.build_parser()
-        args = p.parse_args(["-a", "-s", "-d", "-i", "-m", "10mb",
-                             "--confidence", "high"])
-        self.assertTrue(args.all)
-        self.assertTrue(args.scan)
-        self.assertTrue(args.delete)
+        args = p.parse_args(["delete", "-i", "-m", "10mb", "--confidence", "high"])
+        self.assertEqual(args.command, "delete")
         self.assertTrue(args.interactive)
         self.assertEqual(args.min_size, 10 * 1024 ** 2)
         self.assertEqual(args.confidence, "high")
 
-    def test_delete_works_without_scan(self):
-        # -d no longer requires -s/--scan; it stands alone.
-        args = cli.build_parser().parse_args(["-d"])
-        self.assertTrue(args.delete)
-        self.assertFalse(args.scan)
+    def test_delete_is_its_own_command(self):
+        args = cli.build_parser().parse_args(["delete"])
+        self.assertEqual(args.command, "delete")
+        self.assertFalse(args.interactive)
 
     def test_confidence_defaults_to_high(self):
-        args = cli.build_parser().parse_args([])
+        args = cli.build_parser().parse_args(["scan"])
         self.assertEqual(args.confidence, "high")
 
     def test_exclude_takes_many_and_repeats(self):
         p = cli.build_parser()
-        args = p.parse_args(["--exclude", "npm*", "yarn", "--exclude", "Cursor"])
+        args = p.parse_args(["scan", "--exclude", "npm*", "yarn",
+                             "--exclude", "Cursor"])
         self.assertEqual(args.exclude, ["npm*", "yarn", "Cursor"])
+
+    def test_config_init_and_path_subcommands(self):
+        p = cli.build_parser()
+        self.assertEqual(p.parse_args(["config", "init"]).config_cmd, "init")
+        self.assertEqual(p.parse_args(["config", "init", "x.toml"]).path, "x.toml")
+        self.assertEqual(p.parse_args(["config", "path"]).config_cmd, "path")
+
+    def test_restore_takes_an_id(self):
+        args = cli.build_parser().parse_args(["restore", "4f2a9c"])
+        self.assertEqual(args.command, "restore")
+        self.assertEqual(args.id, "4f2a9c")
 
 
 if __name__ == "__main__":

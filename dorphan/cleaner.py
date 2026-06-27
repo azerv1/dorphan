@@ -231,7 +231,7 @@ def partition_orphans(
 ) -> tuple[list[Classified], list[tuple[Classified, str]]]:
     """Split orphans (largest-first) into (deletable, refused).
 
-    `deletable` is what a `-c`/`-c -d` run would actually touch; `refused` pairs
+    `deletable` is what a `delete` run would actually touch; `refused` pairs
     each skipped folder with the reason (too shallow, protected, ...). Keeping
     these apart means the numbered delete list and its count reflect only the
     folders that will really be removed, instead of burying one deletion among
@@ -262,7 +262,7 @@ def _report_refused(refused: list[tuple[Classified, str]]) -> None:
         print(f"  {shallow} orphan(s) sit in shallow ProgramData/Program Files "
               "folders and aren't bulk-deletable.")
         print("  To remove them, re-run from an elevated terminal: "
-              "dorphan -i --unsafe")
+              "dorphan delete -i --unsafe")
     if protected:
         print(f"  {protected} orphan(s) are protected system paths and are never "
               "deleted.")

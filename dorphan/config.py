@@ -182,7 +182,7 @@ def default_config_path() -> str:
 
 
 def whitelist_path() -> str:
-    """Plain-text list of folder names the user whitelisted via `dorphan -i` (w)."""
+    """Plain-text list of folder names the user whitelisted via `dorphan delete -i` (w)."""
     return os.path.join(config_dir(), "whitelist.txt")
 
 
@@ -207,7 +207,7 @@ def add_to_whitelist(name: str, path: str | None = None) -> str:
     with open(target, "a", encoding="utf-8") as fh:
         if fresh:
             fh.write("# Dorphan whitelist - folder names never flagged as orphans.\n"
-                     "# Added by the 'w' option in `dorphan -i`. One name per line.\n")
+                     "# Added by the 'w' option in `dorphan delete -i`. One name per line.\n")
         fh.write(name + "\n")
     return target
 
@@ -231,7 +231,7 @@ def load(explicit: str | None = None) -> tuple[Config, str | None]:
     else:
         path = None
 
-    # The whitelist (added via `dorphan -i` w) always folds into ignore_folders,
+    # The whitelist (added via `dorphan delete -i` w) always folds into ignore_folders,
     # whether or not a TOML config exists, so whitelisted folders stop appearing.
     for name in load_whitelist():
         n = normalize(name)
