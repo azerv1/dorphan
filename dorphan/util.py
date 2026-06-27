@@ -48,6 +48,25 @@ def tokens(name: str, stopwords=None) -> set[str]:
     return {t for t in raw if len(t) >= 3 and t not in stopwords}
 
 
+def is_elevated() -> bool:
+    """True if the process has Administrator rights (Windows).
+
+    Deleting shallow folders under Program Files / ProgramData needs elevation,
+    so the CLI gates --unsafe / low --depth on this. On non-Windows we can't ask
+    Windows, so fall back to a Unix root check (mostly for tests).
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:  # pragma: no cover - defensive; assume not elevated
+            return False
+    try:  # pragma: no cover - non-Windows convenience only
+        return os.geteuid() == 0
+    except AttributeError:
+        return False
+
+
 def human_size(num_bytes: int) -> str:
     """Format a byte count as a human-readable string."""
     size = float(num_bytes)

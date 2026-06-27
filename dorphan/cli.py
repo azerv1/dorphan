@@ -62,113 +62,172 @@ def _excluded(folder_name: str, folder_path: str, patterns: list[str]) -> bool:
     return False
 
 
+def print_advanced_help() -> None:
+    """Print advanced cleanup options that are hidden from normal --help."""
+    print(textwrap.dedent(
+        f"""\
+        dorphan advanced help
+
+        Normal usage:
+          dorphan              scan only; delete nothing
+          dorphan -c           dry-run cleanup preview
+          dorphan -i           confirm each deletion manually
+
+        Advanced cleanup:
+          --depth N            minimum path depth allowed for deletion
+                               default: {cleaner.DEFAULT_MIN_DEPTH}
+                               absolute minimum: {cleaner.ABSOLUTE_MIN_DEPTH} (Adminstrator only)
+
+          --unsafe             allow depth-{cleaner.ABSOLUTE_MIN_DEPTH} folders such as:
+                               C:\\Program Files\\SomeApp
+                               C:\\ProgramData\\SomeApp
+
+        Safety rules:
+          - Nothing is deleted by a normal scan.
+          - Bulk delete requires: dorphan -c -d
+          - --unsafe requires: dorphan -i --unsafe
+          - --unsafe requires an elevated Administrator terminal.
+          - Shallow folders are never bulk-deleted.
+          - C:\\Windows, C:\\Program Files, drive roots, and protected system
+            folders are always refused.
+
+        Support:
+          --donate
+        """
+    ))
+
+
+def print_basic_usage() -> None:
+    """Print the tiny landing-page help shown when the user runs plain `dorphan`."""
+    print(textwrap.dedent(
+        """\
+        Dorphan
+
+        Find orphaned Windows app folders.
+
+        Usage:
+          dorphan --help          show full help
+          dorphan -m 100MB        scan folders >= 100 MB
+          dorphan --json          scan and output JSON
+          dorphan -c              dry-run cleanup preview
+          dorphan -i              interactive cleanup
+
+        Safety:
+          Plain `dorphan` does not scan or delete.
+          Deleting requires `dorphan -c -d` or `dorphan -i`.
+        """
+    ))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="dorphan",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Find installed apps and orphaned leftover folders on Windows, "
-        "sorted largest-first.\n\n"
-        "Windows' app list is basically the registry uninstall keys, but apps\n"
-        "scatter data across AppData, ProgramData and Program Files. When an app\n"
-        "is uninstalled (or just vanishes, like Cursor), those folders are left\n"
-        "behind. Dorphan finds them by matching every data folder against the\n"
-        "full set of installed apps and flagging the ones nothing claims.",
+        description="Find orphaned Windows app folders. Default: scan only; delete nothing.",
         epilog=textwrap.dedent(
             """\
             examples:
-              dorphan                      scan and report orphaned leftovers
-              dorphan -m 100MB             only show folders >= 100 MB
-              dorphan -a                   also list folders matched to an app
-              dorphan --no-program-files   data folders only (much faster)
-              dorphan --exclude npm* yarn  hide folders matching names/globs
-              dorphan --confidence high    show only high-confidence leftovers
-              dorphan --json               machine-readable output
+              dorphan                 scan only
+              dorphan -m 100MB        show folders >= 100 MB
+              dorphan --exclude npm*  hide matching folders
+              dorphan -c              preview cleanup; delete nothing
+              dorphan -c -d           delete listed orphans
+              dorphan -i              confirm each deletion manually
 
-              dorphan -c                   DRY-RUN: preview what would be deleted
-              dorphan -c -d                delete all orphans at once (largest first)
-              dorphan -i                   go through orphans one by one, y/n each
+            safety:
+              Normal scans never delete.
+              Bulk delete requires -c -d.
+              Risky shallow deletes require -i --unsafe and Administrator.
 
-              dorphan -c --depth 3         also reach shallow folders (Program Files\\App)
-              dorphan -i --unsafe          review even shallow folders, confirming each
-
-              dorphan --init-config        write an editable config you can customize
-              dorphan --config my.toml     use a specific config file
-
-            note: a plain run only reports. Deletion needs -c -d (all at once)
-                  or -i / --interactive (confirm each folder).
-                  Shallow folders (e.g. C:\\Program Files\\App) are refused by
-                  default; lower --depth or pass --unsafe to include them.
-                  Protected system folders are never deleted, even with --unsafe.
+            More help: dorphan --helpme
             """
         ),
     )
+
     p.add_argument("--version", action="version", version=f"Dorphan {__version__}")
     p.add_argument(
+        "--helpme", action="store_true", help=argparse.SUPPRESS,
+    )
+
+    scan = p.add_argument_group("scan")
+    scan.add_argument(
         "-m", "--min-size", type=_parse_size, default=0, metavar="SIZE",
-        help="only show folders at least this big (e.g. 100MB, 1G)",
+        help="only show folders at least this big, e.g. 100MB, 1G",
     )
-    p.add_argument(
+    scan.add_argument(
         "--no-program-files", action="store_true",
-        help="skip Program Files (faster; data folders only)",
+        help="skip Program Files; scan data folders only",
     )
-    p.add_argument(
+    scan.add_argument(
         "-a", "--all", action="store_true",
-        help="also list folders matched to installed apps",
+        help="also show folders matched to installed apps",
     )
-    p.add_argument(
+    scan.add_argument(
         "--exclude", action="extend", nargs="+", default=[], metavar="PATTERN",
-        help="keep folders matching these names/globs out of the orphan list "
-             "(takes many, and repeatable: --exclude npm* yarn Cursor)",
+        help="exclude folder names/globs from orphan results",
     )
-    p.add_argument(
-        "--confidence", choices=["high", "medium"], default="medium", metavar="LEVEL",
-        help="minimum orphan confidence to show: 'high' (strict) or "
-             "'medium' (everything). default: medium",
+    scan.add_argument(
+        "--confidence", choices=["high", "medium"], default="high", metavar="LEVEL",
+        help="minimum orphan confidence: high or medium; default: high",
     )
-    p.add_argument(
+    scan.add_argument(
         "--json", action="store_true",
-        help="emit machine-readable JSON",
+        help="output JSON",
     )
-    p.add_argument(
+
+    cleanup = p.add_argument_group("cleanup")
+    cleanup.add_argument(
         "-c", "--clean", action="store_true",
-        help="preview deletion of orphaned folders (dry-run, deletes nothing)",
+        help="preview cleanup; deletes nothing",
     )
-    p.add_argument(
+    cleanup.add_argument(
         "-d", "--delete", action="store_true",
-        help="use with --clean: actually delete the orphaned folders",
+        help="actually delete; requires --clean",
     )
-    p.add_argument(
+    cleanup.add_argument(
         "-i", "--interactive", action="store_true",
-        help="go through one by one by size desc with a y/n prompt each",
+        help="ask y/n before each deletion",
     )
-    p.add_argument(
-        "--depth", type=int, default=cleaner.DEFAULT_MIN_DEPTH, metavar="N",
-        help="minimum path depth required to delete a folder (default "
-             f"{cleaner.DEFAULT_MIN_DEPTH}); lower it to reach shallow folders "
-             "like C:\\Program Files\\App",
-    )
-    p.add_argument(
+    cleanup.add_argument(
         "--unsafe", action="store_true",
-        help="bypass the depth guard entirely (protected system folders such as "
-             "C:\\Windows and C:\\Program Files are still refused)",
+        help="allow shallow deletes; requires -i and Administrator",
     )
-    p.add_argument(
+
+    config_group = p.add_argument_group("config")
+    config_group.add_argument(
         "--config", metavar="PATH",
-        help="use this TOML config file",
+        help="use a TOML config file",
     )
-    p.add_argument(
+    config_group.add_argument(
         "--init-config", nargs="?", const="", metavar="PATH",
-        help="write a commented starter config (default: %%APPDATA%%\\dorphan) and exit",
+        help="write a starter config and exit",
+    )
+
+    # Hidden from normal help. It is intentionally advanced because lowering
+    # the deletion depth can reach shallow Program Files / ProgramData folders.
+    p.add_argument(
+        "--depth", type=int, default=None, metavar="N",
+        help=argparse.SUPPRESS,
     )
     p.add_argument(
         "--donate", action="store_true",
-        help="donate crypto",
+        help=argparse.SUPPRESS,
     )
     return p
 
-
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if not argv:
+        print_basic_usage()
+        return 0
+
     args = build_parser().parse_args(argv)
+
+    if args.helpme:
+        print_advanced_help()
+        return 0
 
     if args.donate:
         print_donation()
@@ -179,6 +238,53 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote starter config to {target}")
         print("Edit it, then run dorphan (it's picked up automatically).")
         return 0
+
+    if args.interactive and (args.clean or args.delete):
+        print("error: choose either -i/--interactive or --clean/--delete, not both.",
+              file=sys.stderr)
+        return 2
+
+    if args.delete and not args.clean:
+        print("error: --delete is only valid with --clean. Use `dorphan -c` "
+              "to preview, or `dorphan -c -d` to delete.",
+              file=sys.stderr)
+        return 2
+
+    # --unsafe is interactive-only: shallow folders may only be removed one at a
+    # time with a y/n confirmation, never in a bulk force-delete.
+    if args.unsafe and not args.interactive:
+        print("error: --unsafe only works with -i/--interactive; shallow "
+              "folders must be confirmed one by one, not mass-deleted.",
+              file=sys.stderr)
+        return 2
+
+    # Resolve the deletion depth floor. Depth 3 is the lowest allowed value:
+    # anything shallower is never deletable. Reaching depth 3 needs -i --unsafe.
+    if args.depth is not None and args.depth < cleaner.ABSOLUTE_MIN_DEPTH:
+        print(f"error: the minimum --depth is {cleaner.ABSOLUTE_MIN_DEPTH}; "
+              "folders shallower than that are never deletable.", file=sys.stderr)
+        return 2
+    if args.depth is not None and args.depth <= 3 and not args.unsafe:
+        print(f"error: --depth {args.depth} reaches shallow folders; re-run "
+              "with -i --unsafe to remove them one by one.", file=sys.stderr)
+        return 2
+    if args.depth is not None:
+        min_depth = args.depth
+    elif args.unsafe:
+        min_depth = cleaner.ABSOLUTE_MIN_DEPTH  # -i --unsafe drops to depth 3
+    else:
+        min_depth = cleaner.DEFAULT_MIN_DEPTH
+
+    # Reaching shallow folders (Program Files, ProgramData) means deleting files
+    # only Administrators can touch. Require elevation up front instead of having
+    # every delete fail with permission errors midway through.
+    if min_depth < cleaner.DEFAULT_MIN_DEPTH and not util.is_elevated():
+        print("error: removing shallow folders (--unsafe / --depth below "
+              f"{cleaner.DEFAULT_MIN_DEPTH}) deletes files under Program Files / "
+              "ProgramData that need Administrator rights. Re-run dorphan from an "
+              "elevated terminal (right-click > Run as administrator).",
+              file=sys.stderr)
+        return 2
 
     if sys.platform != "win32":
         print("Dorphan targets Windows; registry sources are unavailable here.",
@@ -260,8 +366,7 @@ def main(argv: list[str] | None = None) -> int:
         if not orphans:
             print("\nNothing to clean.")
             return 0
-        count, freed = cleaner.clean_interactive(
-            orphans, min_depth=args.depth, unsafe=args.unsafe)
+        count, freed = cleaner.clean_interactive(orphans, min_depth=min_depth)
         print()
         print(f"Freed {human_size(freed)} across {count} folders.")
     elif args.clean:
@@ -272,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             print(report._c("Dry-run - nothing will be deleted. "
                             "Re-run with --clean --delete to delete.", "1;33"))
         count, freed = cleaner.clean(
-            orphans, force=args.delete, min_depth=args.depth, unsafe=args.unsafe)
+            orphans, force=args.delete, min_depth=min_depth)
         verb = "Freed" if args.delete else "Would free"
         print()
         print(f"{verb} {human_size(freed)} across {count} folders.")

@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import unittest
+from unittest import mock
 
 from dorphan import cli
 
@@ -47,6 +48,48 @@ class TestDonate(unittest.TestCase):
         self.assertTrue(os.path.isfile(cli.DONATE_FILE))
 
 
+class TestDepthGate(unittest.TestCase):
+    def test_low_depth_without_unsafe_errors_before_scanning(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = cli.main(["--depth", "3"])
+        self.assertEqual(rc, 2)
+        self.assertIn("--unsafe", err.getvalue())
+
+    def test_depth_two_also_gated(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["--depth", "2"]), 2)
+
+    def test_depth_default_is_none(self):
+        self.assertIsNone(cli.build_parser().parse_args([]).depth)
+
+    def test_unsafe_without_interactive_errors(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = cli.main(["--unsafe"])
+        self.assertEqual(rc, 2)
+        self.assertIn("-i", err.getvalue())
+
+    def test_unsafe_with_clean_delete_errors(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["-c", "-d", "--unsafe"]), 2)
+
+    def test_unsafe_requires_elevation(self):
+        # -i --unsafe clears the earlier gates but, without admin rights, must
+        # stop before scanning rather than fail every shallow delete later.
+        with mock.patch("dorphan.util.is_elevated", return_value=False), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = cli.main(["-i", "--unsafe"])
+        self.assertEqual(rc, 2)
+        self.assertIn("Administrator", err.getvalue())
+
+    def test_default_run_does_not_require_elevation(self):
+        # A normal (non-shallow) run never asks for elevation, so a non-admin
+        # check must not short-circuit it here.
+        with mock.patch("dorphan.util.is_elevated", return_value=False), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            cli.main(["--depth", "3"])  # gated for a different reason (no --unsafe)
+        self.assertNotIn("Administrator", err.getvalue())
+
+
 class TestParserBuilds(unittest.TestCase):
     def test_short_flags_and_confidence(self):
         p = cli.build_parser()
@@ -59,9 +102,9 @@ class TestParserBuilds(unittest.TestCase):
         self.assertEqual(args.min_size, 10 * 1024 ** 2)
         self.assertEqual(args.confidence, "high")
 
-    def test_confidence_defaults_to_medium(self):
+    def test_confidence_defaults_to_high(self):
         args = cli.build_parser().parse_args([])
-        self.assertEqual(args.confidence, "medium")
+        self.assertEqual(args.confidence, "high")
 
     def test_exclude_takes_many_and_repeats(self):
         p = cli.build_parser()

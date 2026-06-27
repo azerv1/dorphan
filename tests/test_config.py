@@ -20,7 +20,10 @@ class TestDefaults(unittest.TestCase):
         cfg = config._defaults()
         self.assertEqual(cfg.min_token, config.DEFAULT_MIN_TOKEN)
         self.assertIn(config.normalize("Microsoft"), cfg.system_folders)
-        self.assertEqual(cfg.ignore_folders, set())
+        self.assertIn(config.normalize("SoftwareDistribution"), cfg.system_folders)
+        # ignore_folders is seeded with package managers (npm, pip, uv, ...).
+        self.assertIn(config.normalize("npm"), cfg.ignore_folders)
+        self.assertIn(config.normalize("chocolatey"), cfg.ignore_folders)
         self.assertTrue(cfg.roots)
 
     def test_active_roots_honors_program_files_flag(self):

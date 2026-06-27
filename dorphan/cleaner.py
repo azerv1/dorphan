@@ -8,8 +8,12 @@ import stat
 from .matcher import Classified
 
 # Default minimum path depth (drive + N-1 components) a folder must have before
-# we'll delete it. Tunable from the CLI via --depth; bypassable via --unsafe.
+# we'll delete it. Tunable from the CLI via --depth (down to ABSOLUTE_MIN_DEPTH).
 DEFAULT_MIN_DEPTH = 4
+
+# Hard absolute floor: anything shallower than this is NEVER deletable, whatever
+# --depth/--unsafe say. Depth 2 (e.g. C:\Foo) and drive roots are off limits.
+ABSOLUTE_MIN_DEPTH = 3
 
 
 def _norm_key(path: str) -> str:
@@ -44,29 +48,29 @@ def _protected_paths() -> frozenset[str]:
 _PROTECTED = _protected_paths()
 
 
-def _target_refusal(path: str, min_depth: int = DEFAULT_MIN_DEPTH,
-                    unsafe: bool = False) -> str | None:
+def _target_refusal(path: str, min_depth: int = DEFAULT_MIN_DEPTH) -> str | None:
     """Reason this path must not be deleted, or None if it's safe to delete.
 
     The hard floor (protected system folders, drive roots) always applies.
-    The depth guard is a soft floor: tunable with min_depth, skipped if unsafe.
+    The depth guard is the soft floor; the CLI lowers `min_depth` only when
+    --unsafe is given (depths of 3 or lower require that explicit opt-in).
     """
     norm = os.path.normpath(path)
     if _norm_key(norm) in _PROTECTED:
         return "refused (protected system folder)"
     depth = len([p for p in norm.split(os.sep) if p])
-    if depth < 2:  # absolute floor: a drive root, never deletable
-        return "refused (drive root)"
-    if not unsafe and depth < min_depth:
+    if depth < ABSOLUTE_MIN_DEPTH:  # too shallow to ever delete (e.g. C:\Foo)
+        return (f"refused (depth {depth} < {ABSOLUTE_MIN_DEPTH}; "
+                "too shallow to ever delete)")
+    if depth < min_depth:
         return (f"refused (depth {depth} < {min_depth}; "
-                f"use --depth {depth} or --unsafe)")
+                "use -i --unsafe to remove it)")
     return None
 
 
-def _is_safe_target(path: str, min_depth: int = DEFAULT_MIN_DEPTH,
-                    unsafe: bool = False) -> bool:
-    """True if `path` is safe to delete under the given depth/unsafe policy."""
-    return _target_refusal(path, min_depth, unsafe) is None
+def _is_safe_target(path: str, min_depth: int = DEFAULT_MIN_DEPTH) -> bool:
+    """True if `path` is safe to delete under the given depth policy."""
+    return _target_refusal(path, min_depth) is None
 
 
 def _remove_file(fp: str) -> bool:
@@ -84,10 +88,10 @@ def _remove_file(fp: str) -> bool:
         return False
 
 
-def delete(path: str, on_progress=None, min_depth: int = DEFAULT_MIN_DEPTH,
-           unsafe: bool = False) -> tuple[bool, str]:
+def delete(path: str, on_progress=None,
+           min_depth: int = DEFAULT_MIN_DEPTH) -> tuple[bool, str]:
     """Delete a folder tree file-by-file; on_progress(files_removed) per file."""
-    reason = _target_refusal(path, min_depth, unsafe)
+    reason = _target_refusal(path, min_depth)
     if reason is not None:
         return False, reason
     if not os.path.isdir(os.path.normpath(path)):
@@ -120,8 +124,7 @@ def delete(path: str, on_progress=None, min_depth: int = DEFAULT_MIN_DEPTH,
 
 
 def _delete_with_progress(c: Classified, label: str,
-                          min_depth: int = DEFAULT_MIN_DEPTH,
-                          unsafe: bool = False) -> tuple[bool, str]:
+                          min_depth: int = DEFAULT_MIN_DEPTH) -> tuple[bool, str]:
     """Delete one folder, streaming a live 'deleting X/Y files' line."""
     from .util import human_size, progress, progress_done
 
@@ -133,7 +136,7 @@ def _delete_with_progress(c: Classified, label: str,
         progress(f"  {label} deleting {f.name}  {done}/{f.files} files ({pct}%)")
 
     progress(f"  {label} deleting {f.name} ...")
-    ok, msg = delete(f.path, on_progress=report, min_depth=min_depth, unsafe=unsafe)
+    ok, msg = delete(f.path, on_progress=report, min_depth=min_depth)
     progress_done()
     state = "deleted" if ok else "skipped"
     detail = human_size(f.size) if ok else msg
@@ -142,7 +145,7 @@ def _delete_with_progress(c: Classified, label: str,
 
 
 def clean(orphans: list[Classified], force: bool,
-          min_depth: int = DEFAULT_MIN_DEPTH, unsafe: bool = False) -> tuple[int, int]:
+          min_depth: int = DEFAULT_MIN_DEPTH) -> tuple[int, int]:
     """Process orphans largest-first. Returns (count, bytes) actioned."""
     ordered = sorted(orphans, key=lambda c: c.folder.size, reverse=True)
     total_bytes = 0
@@ -151,7 +154,7 @@ def clean(orphans: list[Classified], force: bool,
     for idx, c in enumerate(ordered, 1):
         f = c.folder
         if not force:
-            reason = _target_refusal(f.path, min_depth, unsafe)
+            reason = _target_refusal(f.path, min_depth)
             if reason is not None:
                 print(f"  [dry-run] would SKIP    {f.path}  ({reason})")
                 continue
@@ -159,7 +162,7 @@ def clean(orphans: list[Classified], force: bool,
             total_bytes += f.size
             count += 1
             continue
-        ok, _ = _delete_with_progress(c, f"[{idx}/{n}]", min_depth, unsafe)
+        ok, _ = _delete_with_progress(c, f"[{idx}/{n}]", min_depth)
         if ok:
             total_bytes += f.size
             count += 1
@@ -167,8 +170,7 @@ def clean(orphans: list[Classified], force: bool,
 
 
 def clean_interactive(orphans: list[Classified],
-                      min_depth: int = DEFAULT_MIN_DEPTH,
-                      unsafe: bool = False) -> tuple[int, int]:
+                      min_depth: int = DEFAULT_MIN_DEPTH) -> tuple[int, int]:
     """Walk orphans largest-first, asking y/n per folder. Returns (count, bytes)."""
     from .util import human_size
 
@@ -182,7 +184,7 @@ def clean_interactive(orphans: list[Classified],
     for idx, c in enumerate(ordered, 1):
         f = c.folder
         remaining = len(ordered) - idx + 1
-        reason = _target_refusal(f.path, min_depth, unsafe)
+        reason = _target_refusal(f.path, min_depth)
         if reason is not None:
             print(f"\n[{idx}/{len(ordered)}] {human_size(f.size):>10}  {f.path}"
                   f"\n    auto-skipped: {reason}")
@@ -212,7 +214,7 @@ def clean_interactive(orphans: list[Classified],
                 print("    kept.")
                 continue
 
-        ok, _ = _delete_with_progress(c, "   ")
+        ok, _ = _delete_with_progress(c, "   ", min_depth)
         if ok:
             total_bytes += f.size
             count += 1

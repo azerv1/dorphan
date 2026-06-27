@@ -51,6 +51,25 @@ class TestMatcher(unittest.TestCase):
         m = Matcher(self.inv, self.cfg)
         self.assertEqual(m.classify(folder("Zwxyztool")).status, "system")
 
+    def test_package_managers_are_not_orphans(self):
+        # Package-manager caches/stores must never be flagged for deletion.
+        for name in ("npm", "pip", "uv", "cargo", "maven", "chocolatey",
+                     "Package Cache"):
+            self.assertEqual(self.m.classify(folder(name)).status, "system",
+                             f"{name} should be treated as system/ignored")
+
+    def test_windows_servicing_folders_are_system(self):
+        for name in ("SoftwareDistribution", "Start Menu", "Templates",
+                     "RUXIM", "Reference Assemblies"):
+            self.assertEqual(self.m.classify(folder(name)).status, "system",
+                             f"{name} should be treated as system")
+
+    def test_non_latin_name_is_not_orphan(self):
+        # The localized public Desktop (Greek) normalizes to nothing.
+        c = self.m.classify(folder("Επιφάνεια εργασίας",
+                                   path=r"C:\ProgramData\Επιφάνεια εργασίας"))
+        self.assertEqual(c.status, "system")
+
     def test_install_location_match(self):
         with tempfile.TemporaryDirectory() as d:
             sub = os.path.join(d, "WeirdName")

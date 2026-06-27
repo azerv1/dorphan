@@ -38,17 +38,24 @@ class TestSafety(unittest.TestCase):
             self.assertIsNone(
                 cleaner._target_refusal(r"C:\Program Files\Foo", min_depth=3))
 
-    def test_unsafe_bypasses_depth_but_not_protected(self):
-        # --unsafe lets a shallow non-protected folder through...
+    def test_depth3_floor_allows_shallow_but_not_protected(self):
+        # min_depth=3 lets a depth-3 non-protected folder through...
         self.assertIsNone(
-            cleaner._target_refusal(r"C:\Program Files\Foo", unsafe=True))
-        # ...but never the protected roots themselves.
+            cleaner._target_refusal(r"C:\Program Files\Foo", min_depth=3))
+        # ...but never the protected roots themselves, at any min_depth.
         pf = os.environ.get("ProgramFiles", r"C:\Program Files")
-        self.assertIsNotNone(cleaner._target_refusal(pf, unsafe=True))
-        self.assertIn("protected", cleaner._target_refusal(pf, unsafe=True))
+        self.assertIsNotNone(cleaner._target_refusal(pf, min_depth=3))
+        self.assertIn("protected", cleaner._target_refusal(pf, min_depth=3))
+
+    def test_depth2_never_deletable_even_below_floor(self):
+        # A non-protected depth-2 folder is refused even if min_depth is lowered
+        # under the absolute floor of 3 -- the hard floor still wins.
+        reason = cleaner._target_refusal(r"C:\Foo", min_depth=2)
+        self.assertIsNotNone(reason)
+        self.assertIn("too shallow", reason)
 
     def test_drive_root_never_deletable(self):
-        self.assertIsNotNone(cleaner._target_refusal("C:\\", unsafe=True))
+        self.assertIsNotNone(cleaner._target_refusal("C:\\", min_depth=1))
 
 
 class TestDelete(unittest.TestCase):
@@ -111,6 +118,25 @@ class TestInteractive(unittest.TestCase):
                 count, freed = cleaner.clean_interactive([a])
             self.assertEqual(count, 0)
             self.assertTrue(os.path.exists(a.folder.path))
+
+    def test_min_depth_is_forwarded_to_the_actual_delete(self):
+        # Regression: the y/n gate honored min_depth but the real delete didn't,
+        # so a folder you confirmed at a lowered depth was still refused.
+        with tempfile.TemporaryDirectory() as d:
+            a = make_tree(d, "Alpha", n_files=2)
+            seen = {}
+            real_delete = cleaner.delete
+
+            def spy(path, on_progress=None, **kw):
+                seen["min_depth"] = kw.get("min_depth")
+                return real_delete(path, on_progress, **kw)
+
+            with mock.patch.object(cleaner, "delete", spy), \
+                    mock.patch("builtins.input", side_effect=["y"]):
+                count, freed = cleaner.clean_interactive([a], min_depth=3)
+            self.assertEqual(count, 1)
+            self.assertEqual(seen["min_depth"], 3)
+            self.assertFalse(os.path.exists(a.folder.path))
 
 
 if __name__ == "__main__":

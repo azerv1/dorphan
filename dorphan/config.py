@@ -47,11 +47,43 @@ DEFAULT_SYSTEM_FOLDERS = [
     "Windows NT", "Windows Photo Viewer", "WindowsPowerShell", "PowerShell",
     "USOShared", "USOPrivate", "regid.1991-06.com.microsoft", "SystemData",
     "MSBuild", "dotnet", "GameBarPresenceWriter", "WinSxS", "DiagTrack",
+    # Windows update/servicing, shell, and SDK/debug folders that scatter into
+    # ProgramData and Program Files and must never be flagged as leftovers.
+    "SoftwareDistribution", "Start Menu", "Templates", "Desktop", "Documents",
+    "Favorites", "Links", "RUXIM", "PCHealthCheck", "Application Verifier",
+    "Reference Assemblies", "MSECache", "SystemApps", "PerfLogs", "Boot",
+    "Recovery", "System Volume Information", "$Recycle.Bin", "Installer",
+    "Downloaded Installations", "WindowsPowerShell", "Device Stage",
 ]
 
-# Empty by default — add folder names here (via config) that you've decided are
-# noise and never want flagged, even though nothing installed claims them.
-DEFAULT_IGNORE_FOLDERS: list[str] = []
+# Folder names that are never flagged because they belong to package managers
+# and language/dev toolchains (their caches and global stores look orphaned but
+# are very much in use). Add your own via the [match] ignore_folders config key.
+DEFAULT_IGNORE_FOLDERS: list[str] = [
+    # JavaScript / Node
+    "npm", "npm-cache", "yarn", "pnpm", "node-gyp", "nvm", "corepack",
+    "volta", "fnm", "bower", "electron", "Cypress",
+    # Python
+    "pip", "pipx", "uv", "pipenv", "poetry", "pdm", "hatch", "virtualenv",
+    # Rust
+    "cargo", "rustup",
+    # Go / Deno / Bun
+    "go", "deno", "bun",
+    # Ruby
+    "gem", "bundle", "rbenv", "rvm",
+    # JVM (Java / Scala / Kotlin)
+    "maven", "gradle", "sbt", "coursier", "ivy2",
+    # PHP
+    "composer",
+    # Haskell
+    "cabal", "stack", "ghcup",
+    # .NET / NuGet
+    "NuGet", "Package Cache", "paket",
+    # C / C++
+    "vcpkg", "conan",
+    # Windows package managers / shims
+    "chocolatey", "ChocolateyHttpCache", "shimgen", "scoop", "Webdrivers",
+]
 
 DEFAULT_STOPWORDS = [
     "app", "apps", "data", "the", "inc", "llc", "ltd", "corp", "corporation",
@@ -202,9 +234,10 @@ min_token = {DEFAULT_MIN_TOKEN}
 system_folders = [
 {_toml_list(DEFAULT_SYSTEM_FOLDERS)}]
 
-# Folders you've decided are noise and never want flagged as orphans, even
-# though nothing installed claims them. Empty by default — add your own, e.g.:
-#   ignore_folders = ["SomeVendorCache", "OldGameSaves"]
+# Folders never flagged as orphans even though nothing installed claims them.
+# Seeded with package managers and dev toolchains (npm, pip, uv, cargo, maven,
+# chocolatey, ...) whose caches/global stores look orphaned but are in use.
+# Add your own, e.g.: ignore_folders = ["SomeVendorCache", "OldGameSaves"]
 ignore_folders = [
 {_toml_list(DEFAULT_IGNORE_FOLDERS)}]
 

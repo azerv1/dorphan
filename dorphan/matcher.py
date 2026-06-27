@@ -99,7 +99,10 @@ class Matcher:
 
     def classify(self, folder: Folder) -> Classified:
         fnorm = normalize(folder.name)
-        if fnorm in self._system or fnorm in self._ignore:
+        # A name that normalizes to nothing is a localized/symbol-only shell
+        # folder (e.g. the Greek "Επιφάνεια εργασίας" = Desktop). We can't reason
+        # about it, so never treat it as an orphan.
+        if not fnorm or fnorm in self._system or fnorm in self._ignore:
             return Classified(folder, "system")
         matched = self._match_app(folder)
         if matched:
