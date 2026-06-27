@@ -169,9 +169,83 @@ def clean(orphans: list[Classified], force: bool,
     return count, total_bytes
 
 
+def _scan_one(path: str):
+    """One level of a folder -> (dirs, files, error).
+
+    `dirs` is a list of subfolder names; `files` is [(size, name)]; `error` is a
+    string if the folder couldn't be read (else None).
+    """
+    try:
+        entries = list(os.scandir(path))
+    except OSError as exc:
+        return [], [], (exc.strerror or str(exc))
+    dirs: list[str] = []
+    files: list[tuple[int, str]] = []
+    for e in entries:
+        try:
+            if e.is_dir(follow_symlinks=False):
+                dirs.append(e.name)
+            else:
+                files.append((e.stat(follow_symlinks=False).st_size, e.name))
+        except OSError:
+            files.append((0, e.name))
+    return dirs, files, None
+
+
+def _list_dir(path: str, limit: int = 50) -> None:
+    """Print a folder's immediate contents so the user can decide before y/n.
+
+    If a level holds exactly one subfolder and no files, descend into it (up to a
+    cap) so nested wrappers like Foo\\sub\\sub2\\ reveal where content actually
+    lives. Directories are listed first (most telling — e.g. a 'MSSQL' subfolder),
+    then files with sizes. We don't recurse for sizes, so this stays instant.
+    """
+    from .util import human_size
+
+    display = path
+    for _ in range(40):  # cap guards against junction loops
+        dirs, files, err = _scan_one(display)
+        if err is not None:
+            print(f"    (cannot list: {err})")
+            return
+        if len(dirs) == 1 and not files:
+            display = os.path.join(display, dirs[0])
+            continue
+        break
+
+    if display != path:
+        print(f"    (single-subfolder chain, showing: {display})")
+    if not dirs and not files:
+        print("    (empty)")
+        return
+
+    dirs.sort(key=str.lower)
+    files.sort(key=lambda r: r[0], reverse=True)
+    print(f"    contents  ({len(dirs)} folder(s), {len(files)} file(s)):")
+    shown = 0
+    for name in dirs:
+        if shown >= limit:
+            break
+        print(f"      {'<DIR>':>10}  {name}\\")
+        shown += 1
+    for size, name in files:
+        if shown >= limit:
+            break
+        print(f"      {human_size(size):>10}  {name}")
+        shown += 1
+    remaining = len(dirs) + len(files) - shown
+    if remaining > 0:
+        print(f"      ... and {remaining} more")
+
+
 def clean_interactive(orphans: list[Classified],
-                      min_depth: int = DEFAULT_MIN_DEPTH) -> tuple[int, int]:
-    """Walk orphans largest-first, asking y/n per folder. Returns (count, bytes)."""
+                      min_depth: int = DEFAULT_MIN_DEPTH,
+                      on_whitelist=None) -> tuple[int, int]:
+    """Walk orphans largest-first, asking y/n per folder. Returns (count, bytes).
+
+    `on_whitelist(name)` (if given) persists a folder so it's never scanned again;
+    it should return where it was saved (or a falsy value).
+    """
     from .util import human_size
 
     ordered = sorted(orphans, key=lambda c: c.folder.size, reverse=True)
@@ -180,7 +254,9 @@ def clean_interactive(orphans: list[Classified],
     delete_rest = False
 
     print()
-    print("Interactive cleanup - [y]es delete  [n]o keep  [a]ll remaining  [q]uit")
+    print("Interactive cleanup - [y]es delete  [n]o keep  [l]ist contents  "
+          "[w]hitelist (never scan again)  [a]ll remaining  [q]uit")
+    quit_now = False
     for idx, c in enumerate(ordered, 1):
         f = c.folder
         remaining = len(ordered) - idx + 1
@@ -190,27 +266,48 @@ def clean_interactive(orphans: list[Classified],
                   f"\n    auto-skipped: {reason}")
             continue
         if not delete_rest:
-            prompt = (
-                f"\n[{idx}/{len(ordered)}] {human_size(f.size):>10}  {f.path}\n"
-                f"    delete this? [y/N/a/q] "
-            )
-            try:
-                answer = input(prompt).strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print("\nAborted.")
-                break
-            if answer in ("q", "quit"):
-                print("Stopped.")
-                break
-            if answer in ("a", "all"):
-                confirm = input(
-                    f"    delete ALL {remaining} remaining without asking? [y/N] "
-                ).strip().lower()
-                if confirm in ("y", "yes"):
-                    delete_rest = True
+            # Re-prompt the same folder after a [l]ist, so the user can peek
+            # inside (e.g. spot a database/server subfolder) before deciding.
+            decision = None  # "delete" | "keep" | "whitelist"
+            print(f"\n[{idx}/{len(ordered)}] {human_size(f.size):>10}  {f.path}")
+            while decision is None:
+                try:
+                    answer = input("    delete this? [y/N/l/w/a/q] ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print("\nAborted.")
+                    quit_now = True
+                    break
+                if answer in ("q", "quit"):
+                    print("Stopped.")
+                    quit_now = True
+                    break
+                if answer in ("l", "ls", "list"):
+                    _list_dir(f.path)
+                    continue
+                if answer in ("w", "whitelist"):
+                    dest = on_whitelist(f.name) if on_whitelist is not None else None
+                    note = f" (saved to {dest})" if dest else ""
+                    print(f"    whitelisted '{f.name}' - won't be scanned again{note}.")
+                    decision = "whitelist"
+                    break
+                if answer in ("a", "all"):
+                    confirm = input(
+                        f"    delete ALL {remaining} remaining without asking? [y/N] "
+                    ).strip().lower()
+                    if confirm in ("y", "yes"):
+                        delete_rest = True
+                        decision = "delete"
+                    else:
+                        decision = "keep"  # treat as 'no' for this item
+                elif answer in ("y", "yes"):
+                    decision = "delete"
                 else:
-                    continue  # treat as 'no' for this item
-            elif answer not in ("y", "yes"):
+                    decision = "keep"
+            if quit_now:
+                break
+            if decision == "whitelist":
+                continue  # kept this run; message already printed
+            if decision == "keep":
                 print("    kept.")
                 continue
 

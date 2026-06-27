@@ -65,6 +65,8 @@ Delete interactively, confirming each folder one by one:
 dorphan -i
 ```
 
+At each prompt: `y` delete, `n` keep, `l` list contents (descends through single nested subfolders), `w` whitelist so it's never scanned again, `a` all remaining, `q` quit.
+
 ## Common options
 
 ```text

@@ -7,3 +7,4 @@ dist/
 venv/
 .env
 *.log
+CLAUDE.md

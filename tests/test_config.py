@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from dorphan import config
 
@@ -64,6 +65,25 @@ class TestLoad(unittest.TestCase):
                 fh.write('[match]\nmin_token = 7\n')
             cfg, _ = config.load(p)
             self.assertEqual(cfg.min_token, 7)
+
+
+class TestWhitelist(unittest.TestCase):
+    def test_add_dedups_and_load_reads_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "whitelist.txt")
+            config.add_to_whitelist("Krokiet", path=p)
+            config.add_to_whitelist("krokiet", path=p)  # same after normalize
+            config.add_to_whitelist("MetaQuotes", path=p)
+            names = config.load_whitelist(p)
+            self.assertEqual(names, ["Krokiet", "MetaQuotes"])
+
+    def test_load_merges_whitelist_into_ignore_folders(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "whitelist.txt")
+            config.add_to_whitelist("Krokiet", path=p)
+            with mock.patch.object(config, "whitelist_path", return_value=p):
+                cfg, _ = config.load(r"Z:\no\config.toml")
+            self.assertIn(config.normalize("Krokiet"), cfg.ignore_folders)
 
 
 class TestTemplate(unittest.TestCase):

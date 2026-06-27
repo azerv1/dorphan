@@ -119,6 +119,55 @@ class TestInteractive(unittest.TestCase):
             self.assertEqual(count, 0)
             self.assertTrue(os.path.exists(a.folder.path))
 
+    def test_list_then_keep(self):
+        # [l]ist shows the folder's contents, then re-prompts the same item;
+        # answering 'n' keeps it. The subfolder name should appear in output.
+        with tempfile.TemporaryDirectory() as d:
+            a = make_tree(d, "Alpha", n_files=2)  # creates an 'Alpha/sub' folder
+            with mock.patch("builtins.input", side_effect=["l", "n"]) as inp, \
+                    mock.patch("builtins.print") as out:
+                count, freed = cleaner.clean_interactive([a])
+            self.assertEqual(count, 0)
+            self.assertTrue(os.path.exists(a.folder.path))  # kept, not deleted
+            self.assertEqual(inp.call_count, 2)             # listed, then re-asked
+            printed = " ".join(str(c.args[0]) for c in out.call_args_list if c.args)
+            self.assertIn("sub", printed)                   # listing showed contents
+
+    def test_list_then_delete(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = make_tree(d, "Alpha", n_files=2)
+            with mock.patch("builtins.input", side_effect=["ls", "y"]):
+                count, freed = cleaner.clean_interactive([a])
+            self.assertEqual(count, 1)
+            self.assertFalse(os.path.exists(a.folder.path))  # deleted after peek
+
+    def test_whitelist_keeps_and_invokes_callback(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = make_tree(d, "Alpha", n_files=2)
+            saved = []
+            with mock.patch("builtins.input", side_effect=["w"]):
+                count, freed = cleaner.clean_interactive(
+                    [a], on_whitelist=lambda name: saved.append(name) or "wl.txt")
+            self.assertEqual(count, 0)
+            self.assertTrue(os.path.exists(a.folder.path))  # kept, not deleted
+            self.assertEqual(saved, ["Alpha"])              # callback got the name
+
+    def test_list_descends_single_subfolder_chain(self):
+        # Foo\a\b\c\leaf.txt -> listing Foo should descend to where content lives.
+        with tempfile.TemporaryDirectory() as d:
+            leaf = os.path.join(d, "Wrap", "a", "b", "c")
+            os.makedirs(leaf)
+            with open(os.path.join(leaf, "leaf.txt"), "wb") as fh:
+                fh.write(b"x")
+            f = Classified(Folder(path=os.path.join(d, "Wrap"), name="Wrap",
+                                  root_label="Local", size=1, files=1), "orphan")
+            with mock.patch("builtins.input", side_effect=["l", "n"]), \
+                    mock.patch("builtins.print") as out:
+                cleaner.clean_interactive([f])
+            printed = " ".join(str(c.args[0]) for c in out.call_args_list if c.args)
+            self.assertIn("single-subfolder chain", printed)
+            self.assertIn("leaf.txt", printed)  # descended to the real content
+
     def test_min_depth_is_forwarded_to_the_actual_delete(self):
         # Regression: the y/n gate honored min_depth but the real delete didn't,
         # so a folder you confirmed at a lowered depth was still refused.

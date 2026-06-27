@@ -56,9 +56,37 @@ def enumerate_folders(
 
     # Pass 2 — slow: measure each folder, reporting progress.
     if compute_size:
-        total = len(folders)
-        for i, f in enumerate(folders, 1):
-            f.size, f.files = dir_size(f.path)
-            if on_progress is not None:
-                on_progress(i, total, f)
+        measure(folders, on_progress=on_progress)
     return folders
+
+
+def measure(folders: list[Folder], on_progress=None, workers: int | None = None) -> None:
+    """Fill in size/file-count for the given folders, in place.
+
+    Sizing walks each tree, which is I/O-bound, so we fan the folders out across
+    a small thread pool — Python releases the GIL during the os.scandir/stat
+    syscalls, so this overlaps disk latency and is markedly faster than serial on
+    SSDs. Progress is reported from this (single) thread as each folder finishes.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from .util import dir_size
+
+    total = len(folders)
+    if total == 0:
+        return
+    if workers is None:
+        workers = min(16, (os.cpu_count() or 4) * 4)
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(dir_size, f.path): f for f in folders}
+        for fut in as_completed(futures):
+            f = futures[fut]
+            try:
+                f.size, f.files = fut.result()
+            except Exception:  # pragma: no cover - dir_size already swallows OSError
+                f.size, f.files = 0, 0
+            done += 1
+            if on_progress is not None:
+                on_progress(done, total, f)

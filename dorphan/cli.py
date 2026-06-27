@@ -186,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cleanup.add_argument(
         "-i", "--interactive", action="store_true",
-        help="ask y/n before each deletion",
+        help="confirm each folder (y/n, l=list, w=whitelist)",
     )
     cleanup.add_argument(
         "--unsafe", action="store_true",
@@ -218,6 +218,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+
+    util.enable_color()  # turn on ANSI on Windows, or fall back to plain text
 
     if not argv:
         print_basic_usage()
@@ -303,7 +305,22 @@ def main(argv: list[str] | None = None) -> int:
     inv = inventory.collect()
     print(f"  found {len(inv.apps)} installed app entries.", file=sys.stderr)
 
-    print("Scanning app-data folders (this can take a moment)...", file=sys.stderr)
+    print("Finding app-data folders...", file=sys.stderr)
+    folders = scanner.enumerate_folders(cfg, compute_size=False)
+    print(f"  found {len(folders)} folders; classifying...", file=sys.stderr)
+    classified = classify_all(inv, folders, cfg)
+
+    all_orphans = [c for c in classified if c.status == "orphan"]
+    all_claimed = [c for c in classified if c.status == "claimed"]
+    all_system = [c for c in classified if c.status == "system"]
+
+    # Speed: measure only the folders we'll actually display. Installed-app and
+    # system folders (often the bulk of the bytes) are skipped unless --all/JSON
+    # needs their sizes, so the common run only walks the handful of orphans.
+    if args.json:
+        to_measure = classified if args.all else all_orphans
+    else:
+        to_measure = all_orphans + (all_claimed if args.all else [])
 
     scanned = {"bytes": 0}
 
@@ -314,21 +331,15 @@ def main(argv: list[str] | None = None) -> int:
                       f"{human_size(scanned['bytes']):>9} seen  "
                       f"{folder.root_label}\\{folder.name}")
 
-    folders = scanner.enumerate_folders(
-        cfg,
-        compute_size=True,
-        on_progress=_scan_progress,
-    )
+    print(f"  measuring {len(to_measure)} folder(s)...", file=sys.stderr)
+    # Classified.folder is the same Folder object, so measuring it in place
+    # updates the size/file-count we read back through the classified entries.
+    scanner.measure([c.folder for c in to_measure], on_progress=_scan_progress)
     util.progress_done()
-    print(f"  measured {len(folders)} folders.", file=sys.stderr)
-    classified = classify_all(inv, folders, cfg)
 
+    orphans = list(all_orphans)
     if args.min_size:
-        classified = [c for c in classified if c.folder.size >= args.min_size]
-
-    orphans = [c for c in classified if c.status == "orphan"]
-    claimed = [c for c in classified if c.status == "claimed"]
-    system = [c for c in classified if c.status == "system"]
+        orphans = [c for c in orphans if c.folder.size >= args.min_size]
 
     # Keep orphans at or above the requested confidence ("high" > "medium").
     _conf_rank = {"medium": 0, "high": 1}
@@ -352,21 +363,33 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
 
     if args.json:
-        report.print_json(orphans if not args.all else classified)
+        if args.all:
+            items = classified
+            if args.min_size:
+                items = [c for c in items if c.folder.size >= args.min_size]
+        else:
+            items = orphans
+        report.print_json(items)
         return 0
 
     report.print_table(orphans, "Orphaned leftovers (no installed app claims these)",
                         show_match=True)
     if args.all:
+        claimed = all_claimed
+        if args.min_size:
+            claimed = [c for c in claimed if c.folder.size >= args.min_size]
         report.print_table(claimed, "Installed-app folders", show_match=True)
 
-    report.print_summary(orphans, claimed, system)
+    # Summary counts reflect true totals; the orphan figure honors your filters.
+    report.print_summary(orphans, all_claimed, all_system)
 
     if args.interactive:
         if not orphans:
             print("\nNothing to clean.")
             return 0
-        count, freed = cleaner.clean_interactive(orphans, min_depth=min_depth)
+        count, freed = cleaner.clean_interactive(
+            orphans, min_depth=min_depth,
+            on_whitelist=config_mod.add_to_whitelist)
         print()
         print(f"Freed {human_size(freed)} across {count} folders.")
     elif args.clean:

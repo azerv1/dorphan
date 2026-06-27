@@ -31,6 +31,12 @@ class Matcher:
         self._publishers: dict[str, str] = {}  # normalized publisher -> publisher
         self._pub_tokens: dict[str, str] = {}  # publisher token -> publisher
         self._locations: list[str] = []
+        # normalized vendor name -> display name (HP, Dell, ...).
+        self._vendors: dict[str, str] = {}
+        for v in config.vendor_folders:
+            nv = normalize(v)
+            if nv:
+                self._vendors.setdefault(nv, v)
 
         import os
 
@@ -90,6 +96,14 @@ class Matcher:
                 return self._app_tokens[t]
             if t in self._pub_tokens:
                 return f"(publisher) {self._pub_tokens[t]}"
+
+        # 5. Hardware maker / OEM / driver vendor (HP, Dell, Realtek, ...). These
+        #    often have no registry entry, and "HP" is too short to survive token
+        #    matching, so check vendors explicitly: exact name, name prefix, or a
+        #    full token. Erring toward "keep" here is the safe direction.
+        for nv, disp in self._vendors.items():
+            if fnorm == nv or fnorm.startswith(nv) or nv in ftoks:
+                return f"(vendor) {disp}"
         return ""
 
     def _loc_label(self, loc: str) -> str:

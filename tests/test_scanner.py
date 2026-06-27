@@ -40,6 +40,28 @@ class TestScanner(unittest.TestCase):
             )
             self.assertEqual(seen, [(1, 3), (2, 3), (3, 3)])
 
+    def test_enumerate_without_sizes_is_cheap(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "AppOne"))
+            with open(os.path.join(d, "AppOne", "f.bin"), "wb") as fh:
+                fh.write(b"x" * 50)
+            folders = scanner.enumerate_folders(make_config(d), compute_size=False)
+            self.assertEqual([f.name for f in folders], ["AppOne"])
+            self.assertEqual(folders[0].size, 0)   # not measured yet
+            self.assertEqual(folders[0].files, 0)
+
+    def test_measure_fills_sizes_in_place(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "AppOne"))
+            with open(os.path.join(d, "AppOne", "f.bin"), "wb") as fh:
+                fh.write(b"x" * 123)
+            folders = scanner.enumerate_folders(make_config(d), compute_size=False)
+            seen = []
+            scanner.measure(folders, on_progress=lambda done, total, f: seen.append(done))
+            self.assertEqual(folders[0].size, 123)
+            self.assertEqual(folders[0].files, 1)
+            self.assertEqual(seen, [1])  # progress fired once for the one folder
+
     def test_scan_roots_skips_missing_and_dedups(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = config._defaults()

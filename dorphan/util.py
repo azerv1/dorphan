@@ -7,18 +7,71 @@ import re
 import sys
 
 
+_progress_len = 0  # length of the last status line, so we can blank it cleanly
+
+
 def progress(text: str) -> None:
-    """Overwrite the current stderr line with a live status (TTY only)."""
-    if sys.stderr.isatty():
-        sys.stderr.write("\r\033[K" + text)
-        sys.stderr.flush()
+    """Overwrite the current stderr line with a live status (TTY only).
+
+    Uses a carriage return plus space-padding (no ANSI escapes) so it renders
+    correctly even on consoles that don't interpret the `\\033[K` clear code.
+    """
+    global _progress_len
+    if not sys.stderr.isatty():
+        return
+    pad = max(0, _progress_len - len(text))
+    sys.stderr.write("\r" + text + " " * pad)
+    sys.stderr.flush()
+    _progress_len = len(text)
 
 
 def progress_done() -> None:
     """Clear the live status line."""
+    global _progress_len
     if sys.stderr.isatty():
-        sys.stderr.write("\r\033[K")
+        sys.stderr.write("\r" + " " * _progress_len + "\r")
         sys.stderr.flush()
+        _progress_len = 0
+
+
+_color_enabled = False
+
+
+def enable_color() -> bool:
+    """Turn on ANSI color for this run and report whether it's usable.
+
+    Windows consoles print raw escapes (you'd see `←[1m`) unless we opt in via
+    SetConsoleMode's virtual-terminal flag. If that fails, output is redirected,
+    or NO_COLOR is set, color stays off and callers fall back to plain text.
+    """
+    global _color_enabled
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+        _color_enabled = False
+        return False
+    if sys.platform != "win32":
+        _color_enabled = True
+        return True
+    try:
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        enable_vt = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        ok = False
+        for handle_id in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+            handle = k32.GetStdHandle(handle_id)
+            mode = ctypes.c_uint32()
+            if k32.GetConsoleMode(handle, ctypes.byref(mode)):
+                k32.SetConsoleMode(handle, mode.value | enable_vt)
+                ok = True
+        _color_enabled = ok
+    except Exception:  # pragma: no cover - defensive; assume no color
+        _color_enabled = False
+    return _color_enabled
+
+
+def supports_color() -> bool:
+    """True if ANSI color was successfully enabled this run (see enable_color)."""
+    return _color_enabled
 
 _NORM_RE = re.compile(r"[^a-z0-9]+")
 

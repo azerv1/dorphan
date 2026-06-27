@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 import json
-import sys
 
 from .matcher import Classified
-from .util import human_size
-
-
-def _supports_color() -> bool:
-    return sys.stdout.isatty() and sys.platform == "win32"
+from .util import human_size, supports_color
 
 
 def _c(text: str, code: str) -> str:
-    if not _supports_color():
+    if not supports_color():
         return text
     return f"\033[{code}m{text}\033[0m"
 

@@ -83,6 +83,23 @@ DEFAULT_IGNORE_FOLDERS: list[str] = [
     "vcpkg", "conan",
     # Windows package managers / shims
     "chocolatey", "ChocolateyHttpCache", "shimgen", "scoop", "Webdrivers",
+    # Audio plugin host folders shared by many DAWs/apps; never a single app's
+    # leftover. Both "VstPlugins" and "Vstplugins" normalize to the same entry.
+    "VstPlugins", "Vst3",
+]
+
+# Hardware makers, PC OEMs, and driver/peripheral vendors. Their folders (printer
+# utilities, driver leftovers, control panels) frequently have no matching
+# registry entry yet must never be flagged: they're either still needed or risky
+# to remove. Matched by exact name, name prefix, or token, so "HP" also protects
+# "HPPrintScanDoctor" and "HPCommRecovery". Extend via [match] vendor_folders.
+DEFAULT_VENDOR_FOLDERS: list[str] = [
+    "HP", "Hewlett-Packard",
+    "Dell", "Alienware",
+    "Lenovo", "Acer", "ASUS", "ASUSTeK", "MSI", "Gigabyte", "Toshiba",
+    "Samsung", "Razer", "Corsair", "SteelSeries", "Elgato", "Logitech", "Logi",
+    "Intel", "NVIDIA", "AMD",
+    "Realtek", "Synaptics", "Conexant", "Qualcomm", "Broadcom", "Atheros",
 ]
 
 DEFAULT_STOPWORDS = [
@@ -110,6 +127,7 @@ class Config:
     min_token: int = DEFAULT_MIN_TOKEN
     system_folders: set[str] = field(default_factory=set)   # normalized
     ignore_folders: set[str] = field(default_factory=set)   # normalized
+    vendor_folders: list[str] = field(default_factory=list)  # display names
     stopwords: set[str] = field(default_factory=set)
 
     def active_roots(self) -> list[tuple[str, str]]:
@@ -131,6 +149,7 @@ def _defaults() -> Config:
         min_token=DEFAULT_MIN_TOKEN,
         system_folders={normalize(n) for n in DEFAULT_SYSTEM_FOLDERS},
         ignore_folders={normalize(n) for n in DEFAULT_IGNORE_FOLDERS},
+        vendor_folders=list(DEFAULT_VENDOR_FOLDERS),
         stopwords={s.lower() for s in DEFAULT_STOPWORDS},
     )
 
@@ -138,6 +157,38 @@ def _defaults() -> Config:
 def default_config_path() -> str:
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
     return os.path.join(base, "dorphan", "config.toml")
+
+
+def whitelist_path() -> str:
+    """Plain-text list of folder names the user whitelisted via `dorphan -i` (w)."""
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "dorphan", "whitelist.txt")
+
+
+def load_whitelist(path: str | None = None) -> list[str]:
+    """Folder names from the whitelist file; [] if missing. Skips blanks/#."""
+    target = path or whitelist_path()
+    try:
+        with open(target, "r", encoding="utf-8-sig") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return []
+    return [s.strip() for s in lines if s.strip() and not s.strip().startswith("#")]
+
+
+def add_to_whitelist(name: str, path: str | None = None) -> str:
+    """Append a folder name to the whitelist (deduped). Returns the file path."""
+    target = path or whitelist_path()
+    if normalize(name) in {normalize(n) for n in load_whitelist(target)}:
+        return target
+    os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+    fresh = not os.path.isfile(target)
+    with open(target, "a", encoding="utf-8") as fh:
+        if fresh:
+            fh.write("# Dorphan whitelist - folder names never flagged as orphans.\n"
+                     "# Added by the 'w' option in `dorphan -i`. One name per line.\n")
+        fh.write(name + "\n")
+    return target
 
 
 def find_config(explicit: str | None = None) -> str | None:
@@ -154,8 +205,22 @@ def load(explicit: str | None = None) -> tuple[Config, str | None]:
     """Return (config, source_path); a TOML file overrides only the keys it sets."""
     cfg = _defaults()
     path = find_config(explicit)
-    if not path or not os.path.isfile(path):
-        return cfg, None
+    if path and os.path.isfile(path):
+        _apply_toml(cfg, path)
+    else:
+        path = None
+
+    # The whitelist (added via `dorphan -i` w) always folds into ignore_folders,
+    # whether or not a TOML config exists, so whitelisted folders stop appearing.
+    for name in load_whitelist():
+        n = normalize(name)
+        if n:
+            cfg.ignore_folders.add(n)
+    return cfg, path
+
+
+def _apply_toml(cfg: Config, path: str) -> None:
+    """Overlay a TOML config file's keys onto an existing Config in place."""
     if _toml is None:
         # Can't parse TOML on this interpreter; keep defaults but signal it.
         raise RuntimeError(
@@ -182,10 +247,10 @@ def load(explicit: str | None = None) -> tuple[Config, str | None]:
         cfg.system_folders = {normalize(n) for n in match["system_folders"]}
     if "ignore_folders" in match:
         cfg.ignore_folders = {normalize(n) for n in match["ignore_folders"]}
+    if "vendor_folders" in match:
+        cfg.vendor_folders = [str(n) for n in match["vendor_folders"]]
     if "stopwords" in match:
         cfg.stopwords = {s.lower() for s in match["stopwords"]}
-
-    return cfg, path
 
 
 def _toml_list(items: list[str], indent: str = "  ") -> str:
@@ -240,6 +305,13 @@ system_folders = [
 # Add your own, e.g.: ignore_folders = ["SomeVendorCache", "OldGameSaves"]
 ignore_folders = [
 {_toml_list(DEFAULT_IGNORE_FOLDERS)}]
+
+# Hardware makers / PC OEMs / driver vendors. Their folders are never flagged,
+# even with no matching installed app, because they're usually still needed or
+# risky to remove (printer tools, driver leftovers). Matched by exact name,
+# name prefix, or token, so "HP" also covers "HPPrintScanDoctor".
+vendor_folders = [
+{_toml_list(DEFAULT_VENDOR_FOLDERS)}]
 
 # Generic words stripped from app/folder names before matching.
 stopwords = [

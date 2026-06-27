@@ -70,6 +70,30 @@ class TestMatcher(unittest.TestCase):
                                    path=r"C:\ProgramData\Επιφάνεια εργασίας"))
         self.assertEqual(c.status, "system")
 
+    def test_vendor_folders_are_claimed(self):
+        # OEM / hardware / driver folders must never be flagged, even with no
+        # installed app and even when the name is just a vendor prefix.
+        for name in ("HP", "HPPrintScanDoctor", "HPCommRecovery",
+                     "Hewlett-Packard", "Dell", "Realtek"):
+            c = self.m.classify(folder(name, path=rf"C:\Program Files\{name}"))
+            self.assertEqual(c.status, "claimed",
+                             f"{name} should be protected as a vendor folder")
+            self.assertIn("vendor", c.matched_app)
+
+    def test_vst_plugin_folders_are_not_orphans(self):
+        # Shared audio-plugin host folders are kept regardless of casing.
+        for name in ("VstPlugins", "Vstplugins", "Vst3"):
+            self.assertEqual(self.m.classify(folder(name)).status, "system",
+                             f"{name} should be treated as system/ignored")
+
+    def test_real_app_still_beats_vendor_fallback(self):
+        # An exact app match should win over the vendor fallback label.
+        inv = Inventory(apps=[InstalledApp(name="Intel Driver Assistant")])
+        m = Matcher(inv, self.cfg)
+        c = m.classify(folder("Intel Driver Assistant"))
+        self.assertEqual(c.status, "claimed")
+        self.assertNotIn("vendor", c.matched_app)
+
     def test_install_location_match(self):
         with tempfile.TemporaryDirectory() as d:
             sub = os.path.join(d, "WeirdName")
