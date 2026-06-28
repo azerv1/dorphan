@@ -8,6 +8,8 @@ import shutil
 import stat
 import sys
 
+from .data import DEFAULT_STOPWORDS
+
 
 _progress_len = 0  # length of the last status line, so we can blank it cleanly
 
@@ -102,13 +104,10 @@ def progress_done() -> None:
 
 _NORM_RE = re.compile(r"[^a-z0-9]+")
 
-# Fallback stopwords, used only when a caller doesn't pass its own set (the
-# real list is user-configurable and lives in config.py).
-_DEFAULT_STOPWORDS = frozenset({
-    "app", "apps", "data", "the", "inc", "llc", "ltd", "corp", "corporation",
-    "company", "co", "software", "technologies", "technology", "labs", "studio",
-    "studios", "team", "limited", "gmbh", "x64", "x86", "win", "windows",
-})
+# Fallback stopwords, used only when a caller doesn't pass its own set. The
+# canonical, user-configurable list lives in data.py (config.py layers TOML on
+# top); data.py holds only literals so importing it here can't create a cycle.
+_DEFAULT_STOPWORDS = frozenset(DEFAULT_STOPWORDS)
 
 
 def normalize(name: str) -> str:

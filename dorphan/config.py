@@ -7,6 +7,22 @@ import re
 from dataclasses import dataclass, field
 
 from .util import normalize
+from .data import (
+    DEFAULT_ROOTS,
+    DEFAULT_MIN_TOKEN,
+    DEFAULT_SYSTEM_FOLDERS,
+    DEFAULT_IGNORE_FOLDERS,
+    DEFAULT_VENDOR_FOLDERS,
+    DEFAULT_STOPWORDS,
+)
+
+# The default word lists and scan roots live in data.py (pure data, hand-edited);
+# they are re-exported here so existing `config.DEFAULT_*` references keep working.
+__all__ = [
+    "DEFAULT_ROOTS", "DEFAULT_MIN_TOKEN", "DEFAULT_SYSTEM_FOLDERS",
+    "DEFAULT_IGNORE_FOLDERS", "DEFAULT_VENDOR_FOLDERS", "DEFAULT_STOPWORDS",
+    "Config", "load", "render_template", "write_default_config",
+]
 
 try:  # Python 3.11+
     import tomllib as _toml
@@ -15,98 +31,6 @@ except ModuleNotFoundError:  # pragma: no cover - older Pythons
         import tomli as _toml  # type: ignore
     except ModuleNotFoundError:
         _toml = None  # type: ignore
-
-
-# --------------------------------------------------------------------------
-# Canonical defaults (the single source of truth)
-# --------------------------------------------------------------------------
-
-# Each root: (label, path-template, is_program_files).
-# {env:NAME} expands an environment variable; ~ expands the home directory.
-DEFAULT_ROOTS: list[tuple[str, str, bool]] = [
-    ("Roaming", "{env:APPDATA}", False),
-    ("Local", "{env:LOCALAPPDATA}", False),
-    ("LocalLow", "~/AppData/LocalLow", False),
-    ("Local\\Programs", "{env:LOCALAPPDATA}/Programs", False),
-    ("ProgramData", "{env:PROGRAMDATA}", False),
-    ("Program Files", "{env:ProgramFiles}", True),
-    ("Program Files (x86)", "{env:ProgramFiles(x86)}", True),
-]
-
-DEFAULT_MIN_TOKEN = 4
-
-DEFAULT_SYSTEM_FOLDERS = [
-    "Microsoft", "Microsoft.NET", "Windows", "WindowsApps", "Common Files",
-    "Packages", "Temp", "Tmp", "ConnectedDevicesPlatform", "CrashDumps",
-    "D3DSCache", "ElevatedDiagnostics", "INetCache", "INetCookies", "IconCache",
-    "GroupPolicy", "History", "Microsoft Help", "ModifiableWindowsApps",
-    "PackageStaging", "PeerDistRepub", "Publishers", "ssh", "VirtualStore",
-    "WER", "Caches", "CLR", "Diagnostics", "PlaceholderTileLogoFolder",
-    "Comms", "Application Data", "Internet Explorer", "Defender", "EdgeUpdate",
-    "OneDrive", "Windows Defender", "Windows Mail", "Windows Media Player",
-    "Windows NT", "Windows Photo Viewer", "WindowsPowerShell", "PowerShell",
-    "USOShared", "USOPrivate", "regid.1991-06.com.microsoft", "SystemData",
-    "MSBuild", "dotnet", "GameBarPresenceWriter", "WinSxS", "DiagTrack",
-    # Windows update/servicing, shell, and SDK/debug folders that scatter into
-    # ProgramData and Program Files and must never be flagged as leftovers.
-    "SoftwareDistribution", "Start Menu", "Templates", "Desktop", "Documents",
-    "Favorites", "Links", "RUXIM", "PCHealthCheck", "Application Verifier",
-    "Reference Assemblies", "MSECache", "SystemApps", "PerfLogs", "Boot",
-    "Recovery", "System Volume Information", "$Recycle.Bin", "Installer",
-    "Downloaded Installations", "WindowsPowerShell", "Device Stage",
-]
-
-# Folder names that are never flagged because they belong to package managers
-# and language/dev toolchains (their caches and global stores look orphaned but
-# are very much in use). Add your own via the [match] ignore_folders config key.
-DEFAULT_IGNORE_FOLDERS: list[str] = [
-    # JavaScript / Node
-    "npm", "npm-cache", "yarn", "pnpm", "node-gyp", "nvm", "corepack",
-    "volta", "fnm", "bower", "electron", "Cypress",
-    # Python
-    "pip", "pipx", "uv", "pipenv", "poetry", "pdm", "hatch", "virtualenv",
-    # Rust
-    "cargo", "rustup",
-    # Go / Deno / Bun
-    "go", "deno", "bun",
-    # Ruby
-    "gem", "bundle", "rbenv", "rvm",
-    # JVM (Java / Scala / Kotlin)
-    "maven", "gradle", "sbt", "coursier", "ivy2",
-    # PHP
-    "composer",
-    # Haskell
-    "cabal", "stack", "ghcup",
-    # .NET / NuGet
-    "NuGet", "Package Cache", "paket",
-    # C / C++
-    "vcpkg", "conan",
-    # Windows package managers / shims
-    "chocolatey", "ChocolateyHttpCache", "shimgen", "scoop", "Webdrivers",
-    # Audio plugin host folders shared by many DAWs/apps; never a single app's
-    # leftover. Both "VstPlugins" and "Vstplugins" normalize to the same entry.
-    "VstPlugins", "Vst3",
-]
-
-# Hardware makers, PC OEMs, and driver/peripheral vendors. Their folders (printer
-# utilities, driver leftovers, control panels) frequently have no matching
-# registry entry yet must never be flagged: they're either still needed or risky
-# to remove. Matched by exact name, name prefix, or token, so "HP" also protects
-# "HPPrintScanDoctor" and "HPCommRecovery". Extend via [match] vendor_folders.
-DEFAULT_VENDOR_FOLDERS: list[str] = [
-    "HP", "Hewlett-Packard",
-    "Dell", "Alienware",
-    "Lenovo", "Acer", "ASUS", "ASUSTeK", "MSI", "Gigabyte", "Toshiba",
-    "Samsung", "Razer", "Corsair", "SteelSeries", "Elgato", "Logitech", "Logi",
-    "Intel", "NVIDIA", "AMD",
-    "Realtek", "Synaptics", "Conexant", "Qualcomm", "Broadcom", "Atheros",
-]
-
-DEFAULT_STOPWORDS = [
-    "app", "apps", "data", "the", "inc", "llc", "ltd", "corp", "corporation",
-    "company", "co", "software", "technologies", "technology", "labs", "studio",
-    "studios", "team", "limited", "gmbh", "x64", "x86", "win", "windows",
-]
 
 
 _ENV_RE = re.compile(r"\{env:([^}]+)\}")
@@ -264,6 +188,12 @@ def _apply_toml(cfg: Config, path: str) -> None:
     match = data.get("match", {})
     if "min_token" in match:
         cfg.min_token = int(match["min_token"])
+
+    # Each list supports three forms, applied in this order:
+    #   <name>         -> replace the whole default list
+    #   extra_<name>   -> add to it
+    #   remove_<name>  -> drop entries from it
+    # so a user can extend the defaults without restating them (the common case).
     if "system_folders" in match:
         cfg.system_folders = {normalize(n) for n in match["system_folders"]}
     if "ignore_folders" in match:
@@ -273,9 +203,51 @@ def _apply_toml(cfg: Config, path: str) -> None:
     if "stopwords" in match:
         cfg.stopwords = {s.lower() for s in match["stopwords"]}
 
+    _add_norm(cfg.system_folders, match.get("extra_system_folders"))
+    _discard_norm(cfg.system_folders, match.get("remove_system_folders"))
+    _add_norm(cfg.ignore_folders, match.get("extra_ignore_folders"))
+    _discard_norm(cfg.ignore_folders, match.get("remove_ignore_folders"))
+    _add_norm(cfg.stopwords, match.get("extra_stopwords"), lower=True)
+    _discard_norm(cfg.stopwords, match.get("remove_stopwords"), lower=True)
+    cfg.vendor_folders = _merge_vendors(
+        cfg.vendor_folders,
+        match.get("extra_vendor_folders"),
+        match.get("remove_vendor_folders"),
+    )
+
+
+def _add_norm(target: set[str], names, *, lower: bool = False) -> None:
+    """Add names to a normalized set (skips entries that normalize to nothing)."""
+    for n in names or []:
+        key = str(n).lower() if lower else normalize(str(n))
+        if key:
+            target.add(key)
+
+
+def _discard_norm(target: set[str], names, *, lower: bool = False) -> None:
+    for n in names or []:
+        target.discard(str(n).lower() if lower else normalize(str(n)))
+
+
+def _merge_vendors(current: list[str], extra, remove) -> list[str]:
+    """Append extras and drop removals from the (display-name) vendor list.
+
+    Vendors are compared by normalized name so "Logi" removes "logi" regardless
+    of casing/punctuation. Order is preserved; appended extras keep their casing.
+    """
+    out = list(current) + [str(n) for n in (extra or [])]
+    drop = {normalize(str(n)) for n in (remove or [])}
+    return [v for v in out if normalize(v) not in drop]
+
 
 def _toml_list(items: list[str], indent: str = "  ") -> str:
     return "".join(f'{indent}{_q(i)},\n' for i in items)
+
+
+def _toml_block_commented(key: str, items: list[str]) -> str:
+    """Render `key = [ ... ]` for reference, every line commented out."""
+    body = "".join(f'#   {_q(i)},\n' for i in items)
+    return f"# {key} = [\n{body}# ]"
 
 
 def _q(s: str) -> str:
@@ -315,28 +287,32 @@ roots = [
 # match an app are reported as medium-confidence orphans.
 min_token = {DEFAULT_MIN_TOKEN}
 
-# Folder names that are part of Windows or shared frameworks. These are NEVER
-# reported as orphaned leftovers. Add your own to silence false positives.
-system_folders = [
-{_toml_list(DEFAULT_SYSTEM_FOLDERS)}]
+# Each word list below comes with sensible built-in defaults. You almost never
+# need to restate them -- just tweak with the extra_/remove_ keys:
+#
+#   extra_system_folders  = ["Windows Kits"]     # add to the defaults
+#   remove_ignore_folders = ["Cypress"]          # let a default be flagged again
+#   extra_vendor_folders  = ["Canon", "Epson"]   # protect more vendor folders
+#   extra_stopwords       = ["launcher"]          # stop a generic word from matching
+#
+# The bare keys (system_folders / ignore_folders / vendor_folders / stopwords)
+# REPLACE the whole built-in list instead of extending it -- only use those if
+# you really want to start from scratch. The current built-in lists are shown,
+# commented out, below for reference.
 
-# Folders never flagged as orphans even though nothing installed claims them.
-# Seeded with package managers and dev toolchains (npm, pip, uv, cargo, maven,
-# chocolatey, ...) whose caches/global stores look orphaned but are in use.
-# Add your own, e.g.: ignore_folders = ["SomeVendorCache", "OldGameSaves"]
-ignore_folders = [
-{_toml_list(DEFAULT_IGNORE_FOLDERS)}]
+# system_folders: part of Windows or shared frameworks; NEVER reported.
+{_toml_block_commented("system_folders", DEFAULT_SYSTEM_FOLDERS)}
 
-# Hardware makers / PC OEMs / driver vendors. Their folders are never flagged,
-# even with no matching installed app, because they're usually still needed or
-# risky to remove (printer tools, driver leftovers). Matched by exact name,
+# ignore_folders: package managers and dev toolchains (npm, pip, uv, cargo, ...)
+# whose caches/global stores look orphaned but are in use; never flagged.
+{_toml_block_commented("ignore_folders", DEFAULT_IGNORE_FOLDERS)}
+
+# vendor_folders: hardware makers / OEMs / driver vendors. Matched by exact name,
 # name prefix, or token, so "HP" also covers "HPPrintScanDoctor".
-vendor_folders = [
-{_toml_list(DEFAULT_VENDOR_FOLDERS)}]
+{_toml_block_commented("vendor_folders", DEFAULT_VENDOR_FOLDERS)}
 
-# Generic words stripped from app/folder names before matching.
-stopwords = [
-{_toml_list(DEFAULT_STOPWORDS)}]
+# stopwords: generic words stripped from names before matching.
+{_toml_block_commented("stopwords", DEFAULT_STOPWORDS)}
 """
 
 

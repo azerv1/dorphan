@@ -8,4 +8,5 @@ venv/
 .env
 *.log
 CLAUDE.md
-AUDIT.md
+AUDIT*.md
+STUDY*.md

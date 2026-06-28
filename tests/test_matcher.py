@@ -46,6 +46,27 @@ class TestMatcher(unittest.TestCase):
         self.assertEqual(c.status, "orphan")
         self.assertEqual(c.confidence, "medium")
 
+    def test_generic_audio_token_does_not_bridge_to_driver(self):
+        # "audio" is a stopword, so an unrelated plugin folder must not be
+        # claimed just because a driver app also contains "Audio".
+        inv = Inventory(apps=[
+            InstalledApp(name="Realtek High Definition Audio Driver",
+                         publisher="Realtek"),
+        ])
+        m = Matcher(inv, self.cfg)
+        for name in ("Camel Audio", "Universal Audio"):
+            self.assertEqual(m.classify(folder(name)).status, "orphan",
+                             f"{name} should not be claimed via the 'audio' token")
+
+    def test_vendor_prefix_does_not_swallow_logic(self):
+        # "Logi" used to be a vendor entry; its prefix match wrongly protected
+        # unrelated names like "Logic"/"Logisim". Only real Logitech folders
+        # (Logitech*, LogiShrd) should be treated as a claimed vendor folder.
+        self.assertEqual(self.m.classify(folder("Logic")).status, "orphan")
+        self.assertEqual(self.m.classify(folder("Logisim")).status, "orphan")
+        self.assertEqual(self.m.classify(folder("Logitech")).status, "claimed")
+        self.assertEqual(self.m.classify(folder("LogiShrd")).status, "claimed")
+
     def test_ignore_list_classifies_as_system(self):
         self.cfg.ignore_folders = {config.normalize("Zwxyztool")}
         m = Matcher(self.inv, self.cfg)
@@ -60,7 +81,7 @@ class TestMatcher(unittest.TestCase):
 
     def test_windows_servicing_folders_are_system(self):
         for name in ("SoftwareDistribution", "Start Menu", "Templates",
-                     "RUXIM", "Reference Assemblies"):
+                     "RUXIM", "Reference Assemblies", "Whesvc"):
             self.assertEqual(self.m.classify(folder(name)).status, "system",
                              f"{name} should be treated as system")
 

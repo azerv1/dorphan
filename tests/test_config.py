@@ -58,6 +58,39 @@ class TestLoad(unittest.TestCase):
             # untouched key keeps its default
             self.assertIn(config.normalize("Windows"), cfg.system_folders)
 
+    def test_extra_keys_add_to_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.toml")
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write('[match]\n'
+                         'extra_system_folders = ["My Custom Sys"]\n'
+                         'extra_ignore_folders = ["MetaQuotes"]\n'
+                         'extra_stopwords = ["frobnicate"]\n')
+            cfg, _ = config.load(p)
+            self.assertIn(config.normalize("My Custom Sys"), cfg.system_folders)
+            self.assertIn(config.normalize("MetaQuotes"), cfg.ignore_folders)
+            self.assertIn("frobnicate", cfg.stopwords)
+            # built-in defaults are kept, not replaced
+            self.assertIn(config.normalize("Microsoft"), cfg.system_folders)
+            self.assertIn(config.normalize("npm"), cfg.ignore_folders)
+
+    def test_remove_keys_subtract_from_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.toml")
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write('[match]\n'
+                         'remove_ignore_folders = ["Cypress"]\n'
+                         'remove_stopwords = ["audio"]\n'
+                         'remove_vendor_folders = ["Intel"]\n')
+            cfg, _ = config.load(p)
+            self.assertNotIn(config.normalize("Cypress"), cfg.ignore_folders)
+            self.assertNotIn("audio", cfg.stopwords)
+            self.assertFalse(
+                any(config.normalize(v) == config.normalize("Intel")
+                    for v in cfg.vendor_folders))
+            # untouched defaults survive
+            self.assertIn(config.normalize("npm"), cfg.ignore_folders)
+
     def test_bom_is_tolerated(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "c.toml")
