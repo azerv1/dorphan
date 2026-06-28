@@ -57,40 +57,37 @@ class TestDonate(unittest.TestCase):
 
 
 class TestDepthGate(unittest.TestCase):
-    def test_low_depth_without_unsafe_errors_before_scanning(self):
+    def test_low_depth_without_interactive_errors_before_scanning(self):
+        # A shallow --depth without -i is rejected up front: shallow folders may
+        # only be removed one at a time, never in a bulk delete.
         with contextlib.redirect_stderr(io.StringIO()) as err:
             rc = cli.main(["delete", "--depth", "3"])
         self.assertEqual(rc, 2)
-        self.assertIn("--unsafe", err.getvalue())
+        self.assertIn("-i", err.getvalue())
 
-    def test_depth_two_also_gated(self):
+    def test_depth_below_absolute_min_is_gated(self):
         with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["delete", "--depth", "2"]), 2)
+            self.assertEqual(cli.main(["delete", "-i", "--depth", "2"]), 2)
 
     def test_depth_default_is_none(self):
         self.assertIsNone(cli.build_parser().parse_args(["delete"]).depth)
 
-    def test_unsafe_without_interactive_errors(self):
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = cli.main(["delete", "--unsafe"])
-        self.assertEqual(rc, 2)
-        self.assertIn("-i", err.getvalue())
-
-    def test_unsafe_requires_elevation(self):
-        # delete -i --unsafe clears the earlier gates but, without admin rights,
-        # must stop before scanning rather than fail every shallow delete later.
+    def test_low_depth_requires_elevation(self):
+        # delete -i --depth 3 clears the -i gate but, without admin rights, must
+        # stop before scanning rather than fail every shallow delete later.
         with mock.patch("dorphan.util.is_elevated", return_value=False), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = cli.main(["delete", "-i", "--unsafe"])
+            rc = cli.main(["delete", "-i", "--depth", "3"])
         self.assertEqual(rc, 2)
         self.assertIn("Administrator", err.getvalue())
 
     def test_default_run_does_not_require_elevation(self):
         # A normal (non-shallow) run never asks for elevation, so a non-admin
-        # check must not short-circuit it here.
+        # check must not short-circuit it here. The shallow --depth without -i is
+        # rejected at the -i gate, before the elevation check runs.
         with mock.patch("dorphan.util.is_elevated", return_value=False), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
-            cli.main(["delete", "--depth", "3"])  # gated for no --unsafe instead
+            cli.main(["delete", "--depth", "3"])
         self.assertNotIn("Administrator", err.getvalue())
 
 

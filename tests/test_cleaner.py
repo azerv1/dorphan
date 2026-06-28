@@ -95,7 +95,7 @@ class TestPartition(unittest.TestCase):
             self.assertIn("Keepable", printed)       # ...is named in the list
             # Refused folders are summarized as a count, not enumerated per-line.
             self.assertIn("1 orphan(s)", printed)
-            self.assertIn("--unsafe", printed)
+            self.assertIn("--depth", printed)
             self.assertNotIn(r"C:\Program Files\Foo", printed)  # no per-folder dump
 
 

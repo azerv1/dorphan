@@ -4,11 +4,76 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import stat
 import sys
 
 
 _progress_len = 0  # length of the last status line, so we can blank it cleanly
+
+
+def _git_less() -> str:
+    """Path to the `less` that ships with Git for Windows, or "".
+
+    Git installs less.exe under <Git>\\usr\\bin, which is on the Git Bash PATH
+    but usually NOT on the PowerShell/cmd PATH, so `shutil.which("less")` misses
+    it there. git itself is on PATH, so derive less from it:
+    <Git>\\cmd\\git.exe -> <Git>\\usr\\bin\\less.exe. Better than falling back to
+    Windows `more`, which can't scroll backwards.
+    """
+    git = shutil.which("git")
+    if not git:
+        return ""
+    root = os.path.dirname(os.path.dirname(git))  # <Git>\cmd\git.exe -> <Git>
+    cand = os.path.join(root, "usr", "bin", "less.exe")
+    return cand if os.path.isfile(cand) else ""
+
+
+def _find_pager() -> list[str]:
+    """A pager command (argv) if one already exists on this system, else [].
+
+    We never ship or require a pager: $DORPHAN_PAGER / $PAGER win if set,
+    otherwise prefer `less` (on PATH or shipped with Git) and fall back to
+    `more`. Nothing is installed; if none exist, callers just print everything.
+    Detected entries are resolved to full paths so subprocess launches reliably.
+    """
+    import shlex
+
+    env = os.environ.get("DORPHAN_PAGER") or os.environ.get("PAGER")
+    if env:
+        return shlex.split(env, posix=False)
+    found = shutil.which("less") or _git_less() or shutil.which("more")
+    return [found] if found else []
+
+
+def page(text: str) -> None:
+    """Print `text`, routed through a pager when it won't fit the terminal.
+
+    Mirrors git: only pages when stdout is an interactive TTY *and* the text is
+    taller than the window, so redirected/piped output stays plain and scriptable.
+    Uses an existing pager (see _find_pager) if there is one; with no pager
+    available, or on any failure (broken pipe when the user quits), it just
+    prints the complete text.
+    """
+    if not sys.stdout.isatty():
+        print(text)
+        return
+    rows = shutil.get_terminal_size((80, 24)).lines
+    if text.count("\n") + 1 <= rows:
+        print(text)
+        return
+    pager = _find_pager()
+    if not pager:
+        print(text)
+        return
+    try:
+        import subprocess
+
+        proc = subprocess.Popen(pager, stdin=subprocess.PIPE,
+                                universal_newlines=True)
+        proc.communicate(text)
+    except OSError:  # pager vanished, or broken pipe when the user quits early
+        print(text)
 
 
 def progress(text: str) -> None:
@@ -67,8 +132,8 @@ def is_elevated() -> bool:
     """True if the process has Administrator rights (Windows).
 
     Deleting shallow folders under Program Files / ProgramData needs elevation,
-    so the CLI gates --unsafe / low --depth on this. On non-Windows we can't ask
-    Windows, so fall back to a Unix root check (mostly for tests).
+    so the CLI gates a low --depth on this. On non-Windows we can't ask Windows,
+    so fall back to a Unix root check (mostly for tests).
     """
     if sys.platform == "win32":
         try:

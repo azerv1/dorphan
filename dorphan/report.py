@@ -3,12 +3,39 @@
 from __future__ import annotations
 
 import json
+import re
 
 from .matcher import Classified
 from .util import human_size
 
+# First run of letters/digits in a name; the "family" rows are clustered by.
+# "Docker Desktop Installer" -> "Docker", "Mozilla-1de4..." -> "Mozilla",
+# "Code_backup" -> "Code". Underscores split too, so backups group with the app.
+_FAMILY_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
-def print_table(items: list[Classified], title: str, show_match: bool = False) -> None:
+
+def _family(name: str) -> tuple[str, str]:
+    """Return (lowercase key, display word) for the leading word of a name."""
+    m = _FAMILY_RE.search(name)
+    word = m.group(0) if m else name.strip()
+    return word.lower(), word
+
+
+def _fmt_row(c: Classified, root_w: int, name_w: int, show_match: bool) -> str:
+    f = c.folder
+    line = (
+        f"  {human_size(f.size):>10}  {f.files:>7}  "
+        f"{f.root_label:<{root_w}}  {f.name:<{name_w}}"
+    )
+    if show_match:
+        extra = c.matched_app or (f"orphan ({c.confidence})" if c.status == "orphan" else "")
+        line += f"   {extra}"
+    return line
+
+
+def print_table(
+    items: list[Classified], title: str, show_match: bool = False, group: bool = False
+) -> None:
     items = sorted(items, key=lambda c: c.folder.size, reverse=True)
     print()
     print(title)
@@ -25,16 +52,31 @@ def print_table(items: list[Classified], title: str, show_match: bool = False) -
         header += " " * (name_w - 4) + "   MATCHED"
     print(header)
 
+    if not group:
+        for c in items:
+            print(_fmt_row(c, root_w, name_w, show_match))
+        return
+
+    # Group rows sharing a name family (Docker, Mozilla, ...) so the many folders
+    # one app scatters across roots sit together. items is already size-sorted, so
+    # each bucket stays largest-first; we order buckets by their combined size.
+    buckets: dict[str, list[Classified]] = {}
     for c in items:
-        f = c.folder
-        line = (
-            f"  {human_size(f.size):>10}  {f.files:>7}  "
-            f"{f.root_label:<{root_w}}  {f.name:<{name_w}}"
-        )
-        if show_match:
-            extra = c.matched_app or (f"orphan ({c.confidence})" if c.status == "orphan" else "")
-            line += f"   {extra}"
-        print(line)
+        buckets.setdefault(_family(c.folder.name)[0], []).append(c)
+    ordered = sorted(
+        buckets.values(),
+        key=lambda rows: sum(c.folder.size for c in rows),
+        reverse=True,
+    )
+    # Every family gets a `-- name --` header (even singletons), so each app is
+    # one clearly delimited block and its rows read as nested beneath it.
+    for rows in ordered:
+        total = sum(c.folder.size for c in rows)
+        disp = _family(rows[0].folder.name)[1]
+        n = len(rows)
+        print(f"  -- {disp}  ({human_size(total)}, {n} folder{'s' if n != 1 else ''}) --")
+        for c in rows:
+            print("  " + _fmt_row(c, root_w, name_w, show_match))
 
 
 def print_summary(

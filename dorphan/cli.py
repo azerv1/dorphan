@@ -2,14 +2,16 @@
 
 Subcommand-based (git/docker style): `dorphan scan|delete|restore|log|prune|config`.
 Filters (-m/--confidence/--exclude/--no-program-files/--config) are shared by the
-`scan` and `delete` commands; delete-only knobs (-i/--trash/--unsafe/--depth) live
+`scan` and `delete` commands; delete-only knobs (-i/--trash/--depth) live
 on `delete`.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
+import io
 import json
 import os
 import sys
@@ -99,18 +101,18 @@ def print_deletion_log() -> None:
     """Show the recent deletion log (compact lines) with a tiny legend."""
     from . import recovery
 
-    lines = recovery.read_log()
+    lines = recovery.read_log(limit=0)  # full history; the pager handles length
     if not lines:
         print("No deletions logged yet.")
         return
-    print("act t=yYMMDD-HHMM  size  files  id  path   "
-          "(act: d=delete q=quarantine r=restore p=purge)")
-    for line in lines:
-        print("  " + line)
+    out = ["act t=yYMMDD-HHMM  size  files  id  path   "
+           "(act: d=delete q=quarantine r=restore p=purge)"]
+    out += ["  " + line for line in lines]
     items = recovery.entries()
     if items:
-        print(f"\n{len(items)} folder(s) recoverable. "
-              "Restore with: dorphan restore <id>")
+        out.append(f"\n{len(items)} folder(s) recoverable. "
+                   "Restore with: dorphan restore <id>")
+    util.page("\n".join(out))
 
 
 def run_restore(ident: str) -> int:
@@ -161,13 +163,13 @@ def _help_epilog() -> str:
           dorphan delete              delete them (asks once first)
           dorphan delete -i           review and delete one at a time
           dorphan delete --trash      delete, but keep a restorable copy
-          dorphan delete -i --unsafe  (elevated) reach shallow system folders
+          dorphan delete -i --depth 3 (elevated) reach shallow system folders
 
         safety:
           - `dorphan scan` is read-only; it never deletes.
           - `dorphan delete` asks first; shallow folders are never bulk-deleted
             (default {cleaner.DEFAULT_MIN_DEPTH}-deep minimum).
-          - Reaching shallow folders needs `delete -i --unsafe` + an elevated
+          - Reaching shallow folders needs `delete -i --depth 3` + an elevated
             terminal.
           - C:\\Windows, Program Files, drive roots, and protected system folders
             are always refused.
@@ -263,13 +265,9 @@ def build_parser() -> argparse.ArgumentParser:
              "of deleting them permanently",
     )
     dl.add_argument(
-        "--unsafe", action="store_true",
-        help="allow shallow deletes; requires -i and Administrator",
-    )
-    dl.add_argument(
         "--depth", type=int, default=None, metavar="N",
-        help="minimum path depth a folder must have to be deletable "
-             f"(advanced; default {cleaner.DEFAULT_MIN_DEPTH}, needs --unsafe below it)",
+        help="minimum path depth a folder must have to be deletable (advanced; "
+             f"default {cleaner.DEFAULT_MIN_DEPTH}; below it needs -i and Administrator)",
     )
 
     sub.add_parser("log", help="show the deletion log")
@@ -292,43 +290,44 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_delete_depth(args: argparse.Namespace) -> tuple[int | None, int]:
-    """Validate delete's depth/unsafe/elevation gates.
+    """Validate delete's depth/elevation gates.
 
     Returns (exit_code, min_depth). If exit_code is not None, main should return
     it immediately; otherwise min_depth is the resolved deletion floor.
+
+    A `--depth` below the default reaches shallow ProgramData/Program Files
+    folders, so it is gated twice: it requires `-i` (each one confirmed by hand,
+    never a bulk force-delete) and Administrator rights (those files need it).
     """
-    # --unsafe is interactive-only: shallow folders may only be removed one at a
-    # time with a y/n confirmation, never in a bulk force-delete.
-    if args.unsafe and not args.interactive:
-        print("error: --unsafe only works with `delete -i`; shallow folders must "
-              "be confirmed one by one, not mass-deleted.", file=sys.stderr)
-        return 2, 0
     # Depth 3 is the lowest allowed value; anything shallower is never deletable.
     if args.depth is not None and args.depth < cleaner.ABSOLUTE_MIN_DEPTH:
         print(f"error: the minimum --depth is {cleaner.ABSOLUTE_MIN_DEPTH}; "
               "folders shallower than that are never deletable.", file=sys.stderr)
         return 2, 0
-    if args.depth is not None and args.depth <= 3 and not args.unsafe:
-        print(f"error: --depth {args.depth} reaches shallow folders; add "
-              "-i --unsafe to remove them one by one.", file=sys.stderr)
-        return 2, 0
-    if args.depth is not None:
-        min_depth = args.depth
-    elif args.unsafe:
-        min_depth = cleaner.ABSOLUTE_MIN_DEPTH  # delete -i --unsafe drops to depth 3
-    else:
-        min_depth = cleaner.DEFAULT_MIN_DEPTH
 
-    # Reaching shallow folders (Program Files, ProgramData) means deleting files
-    # only Administrators can touch. Require elevation up front instead of having
-    # every delete fail with permission errors midway through.
-    if min_depth < cleaner.DEFAULT_MIN_DEPTH and not util.is_elevated():
-        print("error: removing shallow folders (--unsafe / --depth below "
-              f"{cleaner.DEFAULT_MIN_DEPTH}) deletes files under Program Files / "
-              "ProgramData that need Administrator rights. Re-run dorphan from an "
-              "elevated terminal (right-click > Run as administrator).",
+    min_depth = args.depth if args.depth is not None else cleaner.DEFAULT_MIN_DEPTH
+
+    if min_depth < cleaner.DEFAULT_MIN_DEPTH:
+        # Shallow folders may only be removed one at a time with a y/n
+        # confirmation, never in a bulk force-delete.
+        if not args.interactive:
+            print(f"error: --depth {args.depth} reaches shallow folders; add -i "
+                  "to confirm and remove them one by one.", file=sys.stderr)
+            return 2, 0
+        # Reaching shallow folders means deleting files only Administrators can
+        # touch. Require elevation up front instead of having every delete fail
+        # with permission errors midway through.
+        if not util.is_elevated():
+            print(f"error: removing shallow folders (--depth below "
+                  f"{cleaner.DEFAULT_MIN_DEPTH}) deletes files under Program Files / "
+                  "ProgramData that need Administrator rights. Re-run dorphan from "
+                  "an elevated terminal (right-click > Run as administrator).",
+                  file=sys.stderr)
+            return 2, 0
+        print(f"warning: --depth {min_depth} lets dorphan reach shallow system "
+              "folders; each is still confirmed individually before deletion.",
               file=sys.stderr)
-        return 2, 0
+
     return None, min_depth
 
 
@@ -404,6 +403,20 @@ def _collect_orphans(args: argparse.Namespace, cfg, command: str):
     return orphans, all_claimed, all_system, classified
 
 
+def _paged(render) -> None:
+    """Capture what render() prints to stdout and show it through the pager.
+
+    The report tables can run hundreds of lines (especially `scan -a`), so we
+    collect them and hand them to util.page, which scrolls them in a pager when
+    the terminal is interactive and too short, and prints plainly otherwise.
+    Progress lines go to stderr, so they're unaffected by the capture.
+    """
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        render()
+    util.page(buf.getvalue().rstrip("\n"))
+
+
 def _run_scan(args, orphans, all_claimed, all_system, classified) -> int:
     """Read-only report for `dorphan scan`."""
     if args.json:
@@ -416,20 +429,23 @@ def _run_scan(args, orphans, all_claimed, all_system, classified) -> int:
         report.print_json(items)
         return 0
 
-    report.print_table(orphans, "Orphaned leftovers (no installed app claims these)",
-                        show_match=True)
-    if args.all:
-        claimed = all_claimed
-        if args.min_size:
-            claimed = [c for c in claimed if c.folder.size >= args.min_size]
-        report.print_table(claimed, "Installed-app folders", show_match=True)
+    def render() -> None:
+        report.print_table(orphans, "Orphaned leftovers (no installed app claims these)",
+                            show_match=True)
+        if args.all:
+            claimed = all_claimed
+            if args.min_size:
+                claimed = [c for c in claimed if c.folder.size >= args.min_size]
+            report.print_table(claimed, "Installed-app folders", show_match=True,
+                               group=True)
+        # Summary counts reflect true totals; the orphan figure honors your filters.
+        report.print_summary(orphans, all_claimed, all_system)
+        if orphans:
+            print()
+            print("To remove these: `dorphan delete` (asks first), "
+                  "or `dorphan delete -i` to review each.")
 
-    # Summary counts reflect true totals; the orphan figure honors your filters.
-    report.print_summary(orphans, all_claimed, all_system)
-    if orphans:
-        print()
-        print("To remove these: `dorphan delete` (asks first), "
-              "or `dorphan delete -i` to review each.")
+    _paged(render)
     return 0
 
 
@@ -457,9 +473,12 @@ def _run_delete(args, orphans, all_claimed, all_system, min_depth: int) -> int:
         return 0
 
     # Bulk delete: show what's about to go, then require an explicit confirmation.
-    report.print_table(orphans, "Orphaned leftovers (no installed app claims these)",
-                        show_match=True)
-    report.print_summary(orphans, all_claimed, all_system)
+    # The listing is paged (it can be long); the confirm prompt follows after.
+    def render() -> None:
+        report.print_table(orphans, "Orphaned leftovers (no installed app claims these)",
+                            show_match=True)
+        report.print_summary(orphans, all_claimed, all_system)
+    _paged(render)
     print()
     deletable, _refused = cleaner.partition_orphans(orphans, min_depth)
     if deletable and not _confirm_bulk_delete(len(deletable), recovering):

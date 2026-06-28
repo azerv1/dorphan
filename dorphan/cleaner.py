@@ -13,7 +13,7 @@ from .util import is_reparse_point
 DEFAULT_MIN_DEPTH = 4
 
 # Hard absolute floor: anything shallower than this is NEVER deletable, whatever
-# --depth/--unsafe say. Depth 2 (e.g. C:\Foo) and drive roots are off limits.
+# --depth says. Depth 2 (e.g. C:\Foo) and drive roots are off limits.
 ABSOLUTE_MIN_DEPTH = 3
 
 
@@ -23,7 +23,7 @@ def _norm_key(path: str) -> str:
 
 
 def _protected_paths() -> frozenset[str]:
-    """Exact folders that must NEVER be deleted, not even with --unsafe.
+    """Exact folders that must NEVER be deleted, not even at the lowest --depth.
 
     Drive roots and the big shared system trees (Windows, Program Files,
     ProgramData, Users, the user profile and its AppData roots).
@@ -72,8 +72,8 @@ def _target_refusal(path: str, min_depth: int = DEFAULT_MIN_DEPTH) -> str | None
     """Reason this path must not be deleted, or None if it's safe to delete.
 
     The hard floor (protected system folders, drive roots) always applies.
-    The depth guard is the soft floor; the CLI lowers `min_depth` only when
-    --unsafe is given (depths of 3 or lower require that explicit opt-in).
+    The depth guard is the soft floor; the CLI lowers `min_depth` only when an
+    explicit `--depth` below the default is given (and gated on -i + elevation).
     """
     norm = os.path.normpath(path)
     if _norm_key(norm) in _PROTECTED:
@@ -84,7 +84,7 @@ def _target_refusal(path: str, min_depth: int = DEFAULT_MIN_DEPTH) -> str | None
                 "too shallow to ever delete)")
     if depth < min_depth:
         return (f"refused (depth {depth} < {min_depth}; "
-                "use -i --unsafe to remove it)")
+                f"use -i --depth {ABSOLUTE_MIN_DEPTH} to remove it)")
     return None
 
 
@@ -256,13 +256,13 @@ def _report_refused(refused: list[tuple[Classified, str]]) -> None:
     with an identical "refused (depth ...)" reason is just noise. We collapse to a
     count plus the one action that unlocks them.
     """
-    shallow = sum(1 for _, reason in refused if "--unsafe" in reason)
+    shallow = sum(1 for _, reason in refused if "--depth" in reason)
     protected = len(refused) - shallow
     if shallow:
         print(f"  {shallow} orphan(s) sit in shallow ProgramData/Program Files "
               "folders and aren't bulk-deletable.")
-        print("  To remove them, re-run from an elevated terminal: "
-              "dorphan delete -i --unsafe")
+        print(f"  To remove them, re-run from an elevated terminal: "
+              f"dorphan delete -i --depth {ABSOLUTE_MIN_DEPTH}")
     if protected:
         print(f"  {protected} orphan(s) are protected system paths and are never "
               "deleted.")

@@ -104,11 +104,11 @@ Safety rules:
 - `dorphan scan` is read-only and deletes nothing.
 - Bulk deletion (`dorphan delete`) asks for confirmation before removing anything.
 - Interactive deletion (`dorphan delete -i`) asks before each folder.
-- `--unsafe` only works with `delete -i`; shallow folders must be confirmed one by one and requires an elevated Administrator terminal.
+- Reaching shallow folders requires a lowered `--depth`, which only works with `delete -i` (each confirmed one by one) and an elevated Administrator terminal.
 - Protected roots such as `C:\Windows`, `C:\Program Files`, `C:\ProgramData`, `C:\Users`, profile roots, drive roots, and anything shallower than depth 3 are refused.
 - Known Windows, system, framework, package-manager, and dev-tool folders are excluded from orphan results by default.
 
-### Shallow folders and `--unsafe`
+### Shallow folders and `--depth`
 
 By default, Dorphan avoids shallow paths because they are riskier. For example:
 
@@ -117,10 +117,10 @@ C:\Program Files\SomeApp
 C:\ProgramData\SomeVendor
 ```
 
-To remove shallow folders, use:
+To remove shallow folders, lower the depth floor (3 is the minimum):
 
 ```powershell
-dorphan delete -i --unsafe [--depth 3]
+dorphan delete -i --depth 3
 ```
 
 This mode:
